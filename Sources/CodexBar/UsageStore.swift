@@ -679,7 +679,10 @@ final class UsageStore {
     func refreshCodexSupplementalDataForAccountSwitch() async {
         guard self.isEnabled(.codex) else { return }
         await self.refreshCreditsIfNeeded()
-        await self.refreshOpenAIDashboardIfNeeded(force: true)
+        // Avoid forcing OpenAI browser cookie imports from the account-switch UI path; that can surface
+        // keychain prompts ("confidential information") while the menu is open and block interaction.
+        let targetEmail = self.codexAccountEmailForOpenAIDashboard()
+        self.handleOpenAIWebTargetEmailChangeIfNeeded(targetEmail: targetEmail)
     }
 }
 
@@ -774,6 +777,10 @@ extension UsageStore {
             guard let self else { return }
             self.logOpenAIWeb(line)
         }
+        let accountDidChange = self.openAIWebAccountDidChange
+        if accountDidChange {
+            self.openAIWebAccountDidChange = false
+        }
 
         do {
             let normalized = targetEmail?
@@ -785,17 +792,7 @@ extension UsageStore {
             // Strategy:
             // - Try the existing per-email WebKit cookie store first (fast; avoids Keychain prompts).
             // - On login-required or account mismatch, import cookies from the configured browser order and retry once.
-            if self.openAIWebAccountDidChange, let targetEmail, !targetEmail.isEmpty {
-                // On account switches, proactively re-import cookies so we don't show stale data from the previous
-                // user.
-                if let imported = await self.importOpenAIDashboardCookiesIfNeeded(
-                    targetEmail: targetEmail,
-                    force: true)
-                {
-                    effectiveEmail = imported
-                }
-                self.openAIWebAccountDidChange = false
-            }
+            // We intentionally skip proactive imports on account switches to avoid keychain prompts in menu flows.
 
             var dash = try await OpenAIDashboardFetcher().loadLatestDashboard(
                 accountEmail: effectiveEmail,
@@ -803,11 +800,13 @@ extension UsageStore {
                 debugDumpHTML: false)
 
             if self.dashboardEmailMismatch(expected: normalized, actual: dash.signedInEmail) {
-                if let imported = await self.importOpenAIDashboardCookiesIfNeeded(
-                    targetEmail: targetEmail,
-                    force: true)
-                {
-                    effectiveEmail = imported
+                if !accountDidChange || force {
+                    if let imported = await self.importOpenAIDashboardCookiesIfNeeded(
+                        targetEmail: targetEmail,
+                        force: true)
+                    {
+                        effectiveEmail = imported
+                    }
                 }
                 dash = try await OpenAIDashboardFetcher().loadLatestDashboard(
                     accountEmail: effectiveEmail,
@@ -834,7 +833,9 @@ extension UsageStore {
             // importing cookies from the user's browser.
             let targetEmail = self.codexAccountEmailForOpenAIDashboard()
             var effectiveEmail = targetEmail
-            if let imported = await self.importOpenAIDashboardCookiesIfNeeded(targetEmail: targetEmail, force: true) {
+            if !accountDidChange || force,
+               let imported = await self.importOpenAIDashboardCookiesIfNeeded(targetEmail: targetEmail, force: true)
+            {
                 effectiveEmail = imported
             }
             do {
@@ -857,7 +858,9 @@ extension UsageStore {
         } catch OpenAIDashboardFetcher.FetchError.loginRequired {
             let targetEmail = self.codexAccountEmailForOpenAIDashboard()
             var effectiveEmail = targetEmail
-            if let imported = await self.importOpenAIDashboardCookiesIfNeeded(targetEmail: targetEmail, force: true) {
+            if !accountDidChange || force,
+               let imported = await self.importOpenAIDashboardCookiesIfNeeded(targetEmail: targetEmail, force: true)
+            {
                 effectiveEmail = imported
             }
             do {
