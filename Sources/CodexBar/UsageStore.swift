@@ -910,6 +910,9 @@ extension UsageStore {
             self.openAIDashboard = nil
             self.lastOpenAIDashboardSnapshot = nil
             self.lastOpenAIDashboardError = nil
+            self.credits = nil
+            self.lastCreditsSnapshot = nil
+            self.lastCreditsError = nil
             self.openAIDashboardRequiresLogin = true
             self.openAIDashboardCookieImportStatus = "Codex account changed; importing browser cookies…"
             self.lastOpenAIDashboardCookieImportAttemptAt = nil

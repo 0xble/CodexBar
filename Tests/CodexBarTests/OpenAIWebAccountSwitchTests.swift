@@ -28,9 +28,11 @@ struct OpenAIWebAccountSwitchTests {
             usageBreakdown: [],
             creditsPurchaseURL: nil,
             updatedAt: Date())
+        store.credits = CreditsSnapshot(remaining: 123, events: [], updatedAt: Date())
 
         store.handleOpenAIWebTargetEmailChangeIfNeeded(targetEmail: "b@example.com")
         #expect(store.openAIDashboard == nil)
+        #expect(store.credits == nil)
         #expect(store.openAIDashboardRequiresLogin == true)
         #expect(store.openAIDashboardCookieImportStatus?.contains("Codex account changed") == true)
     }
