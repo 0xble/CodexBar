@@ -189,10 +189,8 @@ public enum CodexOAuthCredentialsStore {
             account["profile"] as? String,
             account["name"] as? String,
         ]
-        for candidate in candidates {
-            if self.normalizedSelector(candidate) == selector {
-                return true
-            }
+        for candidate in candidates where self.normalizedSelector(candidate) == selector {
+            return true
         }
         return false
     }

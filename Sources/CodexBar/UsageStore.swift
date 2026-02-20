@@ -661,6 +661,12 @@ final class UsageStore {
             }
         }
     }
+
+    func refreshCodexSupplementalDataForAccountSwitch() async {
+        guard self.isEnabled(.codex) else { return }
+        await self.refreshCreditsIfNeeded()
+        await self.refreshOpenAIDashboardIfNeeded(force: true)
+    }
 }
 
 extension UsageStore {
@@ -1086,6 +1092,9 @@ extension UsageStore {
     }
 
     func codexAccountEmailForOpenAIDashboard() -> String? {
+        if let selected = self.selectedCodexTokenAccountEmailForOpenAIDashboard() {
+            return selected
+        }
         let direct = self.snapshots[.codex]?.accountEmail(for: .codex)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if let direct, !direct.isEmpty { return direct }

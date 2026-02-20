@@ -466,6 +466,9 @@ extension StatusItemController {
                 self.settings.setActiveTokenAccountIndex(index, for: display.provider)
                 Task { @MainActor in
                     await self.store.refreshProvider(display.provider, allowDisabled: true)
+                    if display.provider == .codex {
+                        await self.store.refreshCodexSupplementalDataForAccountSwitch()
+                    }
                     self.populateMenu(menu, provider: display.provider)
                     self.markMenuFresh(menu)
                     self.applyIcon(phase: nil)

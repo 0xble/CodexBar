@@ -62,4 +62,65 @@ struct OpenAIWebAccountSwitchTests {
         store.handleOpenAIWebTargetEmailChangeIfNeeded(targetEmail: "a@example.com")
         #expect(store.openAIDashboard == dash)
     }
+
+    @Test
+    func codexDashboardTargetPrefersSelectedTokenAccountEmail() {
+        let settings = SettingsStore(
+            configStore: testConfigStore(suiteName: "OpenAIWebAccountSwitchTests-selected-email"),
+            zaiTokenStore: NoopZaiTokenStore(),
+            syntheticTokenStore: NoopSyntheticTokenStore())
+        settings.refreshFrequency = .manual
+        settings.addTokenAccount(provider: .codex, label: "first@example.com", token: "profile-first")
+        settings.addTokenAccount(provider: .codex, label: "second@example.com", token: "profile-second")
+        settings.setActiveTokenAccountIndex(1, for: .codex)
+
+        let store = UsageStore(
+            fetcher: UsageFetcher(),
+            browserDetection: BrowserDetection(cacheTTL: 0),
+            settings: settings)
+
+        store._setSnapshotForTesting(
+            UsageSnapshot(
+                primary: nil,
+                secondary: nil,
+                updatedAt: Date(),
+                identity: ProviderIdentitySnapshot(
+                    providerID: .codex,
+                    accountEmail: "snapshot@example.com",
+                    accountOrganization: nil,
+                    loginMethod: "Pro")),
+            provider: .codex)
+
+        #expect(store.codexAccountEmailForOpenAIDashboard() == "second@example.com")
+    }
+
+    @Test
+    func codexDashboardTargetIgnoresNonEmailTokenAccountLabel() {
+        let settings = SettingsStore(
+            configStore: testConfigStore(suiteName: "OpenAIWebAccountSwitchTests-non-email-label"),
+            zaiTokenStore: NoopZaiTokenStore(),
+            syntheticTokenStore: NoopSyntheticTokenStore())
+        settings.refreshFrequency = .manual
+        settings.addTokenAccount(provider: .codex, label: "Work profile", token: "profile-work")
+        settings.setActiveTokenAccountIndex(0, for: .codex)
+
+        let store = UsageStore(
+            fetcher: UsageFetcher(),
+            browserDetection: BrowserDetection(cacheTTL: 0),
+            settings: settings)
+
+        store._setSnapshotForTesting(
+            UsageSnapshot(
+                primary: nil,
+                secondary: nil,
+                updatedAt: Date(),
+                identity: ProviderIdentitySnapshot(
+                    providerID: .codex,
+                    accountEmail: "snapshot@example.com",
+                    accountOrganization: nil,
+                    loginMethod: "Pro")),
+            provider: .codex)
+
+        #expect(store.codexAccountEmailForOpenAIDashboard() == "snapshot@example.com")
+    }
 }
