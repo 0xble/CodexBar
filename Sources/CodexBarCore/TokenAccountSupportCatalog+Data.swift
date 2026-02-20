@@ -2,6 +2,13 @@ import Foundation
 
 extension TokenAccountSupportCatalog {
     static let supportByProvider: [UsageProvider: TokenAccountSupport] = [
+        .codex: TokenAccountSupport(
+            title: "OAuth accounts",
+            subtitle: "Select which Codex OAuth profile to use.",
+            placeholder: "Profile key…",
+            injection: .environment(key: CodexOAuthCredentialsStore.accountSelectorEnvKey),
+            requiresManualCookieSource: false,
+            cookieName: nil),
         .claude: TokenAccountSupport(
             title: "Session tokens",
             subtitle: "Store Claude sessionKey cookies or OAuth access tokens.",

@@ -465,13 +465,11 @@ extension StatusItemController {
                 guard let self, let menu else { return }
                 self.settings.setActiveTokenAccountIndex(index, for: display.provider)
                 Task { @MainActor in
-                    await ProviderInteractionContext.$current.withValue(.userInitiated) {
-                        await self.store.refresh()
-                    }
+                    await self.store.refreshProvider(display.provider, allowDisabled: true)
+                    self.populateMenu(menu, provider: display.provider)
+                    self.markMenuFresh(menu)
+                    self.applyIcon(phase: nil)
                 }
-                self.populateMenu(menu, provider: display.provider)
-                self.markMenuFresh(menu)
-                self.applyIcon(phase: nil)
             })
         let item = NSMenuItem()
         item.view = view

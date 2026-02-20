@@ -19,9 +19,8 @@ struct ClaudeOAuthFetchStrategyAvailabilityTests {
         }
     }
 
-    private func makeContext(sourceMode: ProviderSourceMode) -> ProviderFetchContext {
-        let env: [String: String] = [:]
-        return ProviderFetchContext(
+    private func makeContext(sourceMode: ProviderSourceMode, env: [String: String] = [:]) -> ProviderFetchContext {
+        ProviderFetchContext(
             runtime: .app,
             sourceMode: sourceMode,
             includeCredits: false,
@@ -115,6 +114,17 @@ struct ClaudeOAuthFetchStrategyAvailabilityTests {
         #expect(strategy.shouldFallback(
             on: ClaudeUsageError.oauthFailed("oauth failed"),
             context: context) == true)
+    }
+
+    @Test
+    func autoModeWithExplicitOAuthTokenDoesNotFallbackToCLI() {
+        let context = self.makeContext(
+            sourceMode: .auto,
+            env: [ClaudeOAuthCredentialsStore.environmentTokenKey: "sk-ant-oat-test-token"])
+        let strategy = ClaudeOAuthFetchStrategy()
+        #expect(strategy.shouldFallback(
+            on: ClaudeUsageError.oauthFailed("oauth failed"),
+            context: context) == false)
     }
 
     @Test

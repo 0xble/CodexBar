@@ -134,16 +134,20 @@ struct CodexOAuthFetchStrategy: ProviderFetchStrategy {
     let id: String = "codex.oauth"
     let kind: ProviderFetchKind = .oauth
 
-    func isAvailable(_: ProviderFetchContext) async -> Bool {
-        (try? CodexOAuthCredentialsStore.load()) != nil
+    func isAvailable(_ context: ProviderFetchContext) async -> Bool {
+        let selector = self.selectedAccountSelector(from: context)
+        return (try? CodexOAuthCredentialsStore.load(accountSelector: selector)) != nil
     }
 
-    func fetch(_: ProviderFetchContext) async throws -> ProviderFetchResult {
-        var credentials = try CodexOAuthCredentialsStore.load()
+    func fetch(_ context: ProviderFetchContext) async throws -> ProviderFetchResult {
+        let selector = self.selectedAccountSelector(from: context)
+        var credentials = try CodexOAuthCredentialsStore.load(accountSelector: selector)
 
         if credentials.needsRefresh, !credentials.refreshToken.isEmpty {
             credentials = try await CodexTokenRefresher.refresh(credentials)
-            try CodexOAuthCredentialsStore.save(credentials)
+            if selector == nil {
+                try CodexOAuthCredentialsStore.save(credentials)
+            }
         }
 
         let usage = try await CodexOAuthUsageFetcher.fetchUsage(
@@ -217,6 +221,10 @@ struct CodexOAuthFetchStrategy: ProviderFetchStrategy {
         let authDict = payload["https://api.openai.com/auth"] as? [String: Any]
         let plan = (authDict?["chatgpt_plan_type"] as? String) ?? (payload["chatgpt_plan_type"] as? String)
         return plan?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func selectedAccountSelector(from context: ProviderFetchContext) -> String? {
+        context.env[CodexOAuthCredentialsStore.accountSelectorEnvKey]?.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 

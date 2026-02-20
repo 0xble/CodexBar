@@ -244,7 +244,16 @@ struct ClaudeOAuthFetchStrategy: ProviderFetchStrategy {
     func shouldFallback(on _: Error, context: ProviderFetchContext) -> Bool {
         // In Auto mode, fall back to the next strategy (cli/web) if OAuth fails (e.g. user cancels keychain prompt
         // or auth breaks).
-        context.runtime == .app && context.sourceMode == .auto
+        guard context.runtime == .app, context.sourceMode == .auto else { return false }
+        let explicitOAuthToken = context.env[ClaudeOAuthCredentialsStore.environmentTokenKey]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        // When a concrete OAuth access token is explicitly injected (e.g. token-account selection),
+        // do not fall through to CLI because CLI reports the currently logged-in global account and can
+        // collapse distinct account selections into the same identity/usage card.
+        if let explicitOAuthToken, !explicitOAuthToken.isEmpty {
+            return false
+        }
+        return true
     }
 
     fileprivate static func snapshot(from usage: ClaudeUsageSnapshot) -> UsageSnapshot {

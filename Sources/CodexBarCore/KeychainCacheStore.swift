@@ -46,13 +46,14 @@ public enum KeychainCacheStore {
             return testResult
         }
         #if os(macOS)
-        let query: [String: Any] = [
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: self.serviceName,
             kSecAttrAccount as String: key.account,
             kSecMatchLimit as String: kSecMatchLimitOne,
             kSecReturnData as String: true,
         ]
+        KeychainNoUIQuery.apply(to: &query)
 
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
@@ -69,6 +70,9 @@ public enum KeychainCacheStore {
             }
             return .found(decoded)
         case errSecItemNotFound:
+            return .missing
+        case errSecInteractionNotAllowed:
+            self.log.warning("Keychain cache read suppressed (interaction not allowed) (\(key.account))")
             return .missing
         default:
             self.log.error("Keychain cache read failed (\(key.account)): \(status)")
@@ -90,17 +94,22 @@ public enum KeychainCacheStore {
             return
         }
 
-        let query: [String: Any] = [
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: self.serviceName,
             kSecAttrAccount as String: key.account,
         ]
+        KeychainNoUIQuery.apply(to: &query)
         let updateAttrs: [String: Any] = [
             kSecValueData as String: data,
         ]
 
         let updateStatus = SecItemUpdate(query as CFDictionary, updateAttrs as CFDictionary)
         if updateStatus == errSecSuccess {
+            return
+        }
+        if updateStatus == errSecInteractionNotAllowed {
+            self.log.warning("Keychain cache update suppressed (interaction not allowed) (\(key.account))")
             return
         }
         if updateStatus != errSecItemNotFound {
@@ -114,6 +123,10 @@ public enum KeychainCacheStore {
         addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
 
         let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
+        if addStatus == errSecInteractionNotAllowed {
+            self.log.warning("Keychain cache add suppressed (interaction not allowed) (\(key.account))")
+            return
+        }
         if addStatus != errSecSuccess {
             self.log.error("Keychain cache add failed (\(key.account)): \(addStatus)")
         }
@@ -125,12 +138,17 @@ public enum KeychainCacheStore {
             return
         }
         #if os(macOS)
-        let query: [String: Any] = [
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: self.serviceName,
             kSecAttrAccount as String: key.account,
         ]
+        KeychainNoUIQuery.apply(to: &query)
         let status = SecItemDelete(query as CFDictionary)
+        if status == errSecInteractionNotAllowed {
+            self.log.warning("Keychain cache delete suppressed (interaction not allowed) (\(key.account))")
+            return
+        }
         if status != errSecSuccess, status != errSecItemNotFound {
             self.log.error("Keychain cache delete failed (\(key.account)): \(status)")
         }

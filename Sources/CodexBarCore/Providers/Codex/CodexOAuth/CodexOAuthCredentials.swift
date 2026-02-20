@@ -46,6 +46,8 @@ public enum CodexOAuthCredentialsError: LocalizedError, Sendable {
 }
 
 public enum CodexOAuthCredentialsStore {
+    public static let accountSelectorEnvKey = "CODEXBAR_CODEX_ACCOUNT_KEY"
+
     private static var authFilePath: URL {
         let home = FileManager.default.homeDirectoryForCurrentUser
         if let codexHome = ProcessInfo.processInfo.environment["CODEX_HOME"]?.trimmingCharacters(
@@ -55,6 +57,31 @@ public enum CodexOAuthCredentialsStore {
             return URL(fileURLWithPath: codexHome).appendingPathComponent("auth.json")
         }
         return home.appendingPathComponent(".codex").appendingPathComponent("auth.json")
+    }
+
+    private static var catalogFilePath: URL {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        if let xdgConfigHome = ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"]?.trimmingCharacters(
+            in: .whitespacesAndNewlines),
+            !xdgConfigHome.isEmpty
+        {
+            return URL(fileURLWithPath: xdgConfigHome)
+                .appendingPathComponent("secrets")
+                .appendingPathComponent("codex-oauth.json")
+        }
+        return home
+            .appendingPathComponent(".config")
+            .appendingPathComponent("secrets")
+            .appendingPathComponent("codex-oauth.json")
+    }
+
+    public static func load(accountSelector: String?) throws -> CodexOAuthCredentials {
+        if let selector = self.normalizedSelector(accountSelector),
+           let selected = try self.loadCatalogCredentials(accountSelector: selector)
+        {
+            return selected
+        }
+        return try self.load()
     }
 
     public static func load() throws -> CodexOAuthCredentials {
@@ -133,6 +160,69 @@ public enum CodexOAuthCredentialsStore {
         let directory = url.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try data.write(to: url, options: .atomic)
+    }
+
+    private static func loadCatalogCredentials(accountSelector: String) throws -> CodexOAuthCredentials? {
+        let url = self.catalogFilePath
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        let data = try Data(contentsOf: url)
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let accounts = root["accounts"] as? [[String: Any]]
+        else {
+            throw CodexOAuthCredentialsError.decodeFailed("Invalid codex-oauth catalog JSON")
+        }
+
+        for account in accounts {
+            if !self.accountMatchesSelector(account, selector: accountSelector) {
+                continue
+            }
+            if let credentials = self.catalogAccountCredentials(account) {
+                return credentials
+            }
+        }
+        return nil
+    }
+
+    private static func accountMatchesSelector(_ account: [String: Any], selector: String) -> Bool {
+        let candidates = [
+            account["key"] as? String,
+            account["profile"] as? String,
+            account["name"] as? String,
+        ]
+        for candidate in candidates {
+            if self.normalizedSelector(candidate) == selector {
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func catalogAccountCredentials(_ account: [String: Any]) -> CodexOAuthCredentials? {
+        guard let accessToken = (account["access_token"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              let refreshToken = (account["refresh_token"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !accessToken.isEmpty,
+              !refreshToken.isEmpty
+        else {
+            return nil
+        }
+
+        let idToken = (account["id_token"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let accountId = (account["account_id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lastRefresh = Self.parseLastRefresh(from: account["last_refresh"])
+
+        return CodexOAuthCredentials(
+            accessToken: accessToken,
+            refreshToken: refreshToken,
+            idToken: idToken?.isEmpty == false ? idToken : nil,
+            accountId: accountId?.isEmpty == false ? accountId : nil,
+            lastRefresh: lastRefresh)
+    }
+
+    private static func normalizedSelector(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return trimmed.lowercased()
     }
 
     private static func parseLastRefresh(from raw: Any?) -> Date? {

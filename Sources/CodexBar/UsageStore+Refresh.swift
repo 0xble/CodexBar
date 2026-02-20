@@ -41,6 +41,7 @@ extension UsageStore {
                 self.accountSnapshots.removeValue(forKey: provider)
             }
         }
+        let expectedSelectedAccountID = self.settings.selectedTokenAccount(for: provider)?.id
 
         let fetchContext = spec.makeFetchContext()
         let descriptor = spec.descriptor
@@ -72,6 +73,10 @@ extension UsageStore {
         }
         await MainActor.run {
             self.lastFetchAttempts[provider] = outcome.attempts
+        }
+
+        if expectedSelectedAccountID != self.settings.selectedTokenAccount(for: provider)?.id {
+            return
         }
 
         switch outcome.result {
