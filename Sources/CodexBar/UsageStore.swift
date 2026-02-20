@@ -623,6 +623,20 @@ final class UsageStore {
 
     private func refreshCreditsIfNeeded() async {
         guard self.isEnabled(.codex) else { return }
+        let selectedEmail = self.selectedCodexTokenAccountEmailForOpenAIDashboard()
+        let cliEmail = Self.normalizedCodexAccountEmail(self.codexFetcher.loadAccountInfo().email)
+        if !Self.shouldUseCodexCLICredits(selectedEmail: selectedEmail, cliEmail: cliEmail) {
+            await MainActor.run {
+                self.credits = nil
+                self.lastCreditsSnapshot = nil
+                let selectedLabel = Self.normalizedCodexAccountEmail(selectedEmail) ?? "selected account"
+                let cliLabel = cliEmail ?? "unknown account"
+                self.lastCreditsError =
+                    "Codex CLI is signed in as \(cliLabel). Switch CLI login to \(selectedLabel) for credits."
+                self.creditsFailureStreak = 0
+            }
+            return
+        }
         do {
             let credits = try await self.codexFetcher.loadLatestCredits(
                 keepCLISessionsAlive: self.settings.debugKeepCLISessionsAlive)

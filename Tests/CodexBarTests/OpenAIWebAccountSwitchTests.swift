@@ -123,4 +123,23 @@ struct OpenAIWebAccountSwitchTests {
 
         #expect(store.codexAccountEmailForOpenAIDashboard() == "snapshot@example.com")
     }
+
+    @Test
+    func codexCLICreditsRequireMatchingSelectedAccountEmail() {
+        #expect(UsageStore.shouldUseCodexCLICredits(
+            selectedEmail: "alpha@example.com",
+            cliEmail: "alpha@example.com"))
+        #expect(UsageStore.shouldUseCodexCLICredits(
+            selectedEmail: "Alpha@Example.com",
+            cliEmail: "alpha@example.com"))
+        #expect(!UsageStore.shouldUseCodexCLICredits(
+            selectedEmail: "alpha@example.com",
+            cliEmail: "beta@example.com"))
+        #expect(UsageStore.shouldUseCodexCLICredits(
+            selectedEmail: nil,
+            cliEmail: "beta@example.com"))
+        #expect(UsageStore.shouldUseCodexCLICredits(
+            selectedEmail: "alpha@example.com",
+            cliEmail: nil))
+    }
 }

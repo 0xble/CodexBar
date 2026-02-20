@@ -5,7 +5,7 @@ import Foundation
 extension UsageStore {
     func selectedCodexTokenAccountEmailForOpenAIDashboard() -> String? {
         guard let selected = self.settings.selectedTokenAccount(for: .codex) else { return nil }
-        if let labelEmail = Self.normalizedOpenAIDashboardEmail(selected.label) {
+        if let labelEmail = Self.normalizedCodexAccountEmail(selected.label) {
             return labelEmail
         }
         let selector = selected.token.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -17,7 +17,7 @@ extension UsageStore {
         return Self.codexOAuthAccountEmail(credentials)
     }
 
-    private static func normalizedOpenAIDashboardEmail(_ raw: String?) -> String? {
+    static func normalizedCodexAccountEmail(_ raw: String?) -> String? {
         guard let value = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
               !value.isEmpty,
               value.contains("@")
@@ -25,6 +25,16 @@ extension UsageStore {
             return nil
         }
         return value
+    }
+
+    static func shouldUseCodexCLICredits(selectedEmail: String?, cliEmail: String?) -> Bool {
+        guard let normalizedSelected = normalizedCodexAccountEmail(selectedEmail)?.lowercased() else {
+            return true
+        }
+        guard let normalizedCLI = normalizedCodexAccountEmail(cliEmail)?.lowercased() else {
+            return true
+        }
+        return normalizedSelected == normalizedCLI
     }
 
     private static func codexOAuthAccountEmail(_ credentials: CodexOAuthCredentials) -> String? {
@@ -35,6 +45,6 @@ extension UsageStore {
         }
         let profile = payload["https://api.openai.com/profile"] as? [String: Any]
         let email = (payload["email"] as? String) ?? (profile?["email"] as? String)
-        return Self.normalizedOpenAIDashboardEmail(email)
+        return Self.normalizedCodexAccountEmail(email)
     }
 }
