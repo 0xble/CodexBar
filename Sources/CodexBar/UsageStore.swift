@@ -679,10 +679,11 @@ final class UsageStore {
     func refreshCodexSupplementalDataForAccountSwitch() async {
         guard self.isEnabled(.codex) else { return }
         await self.refreshCreditsIfNeeded()
-        // Avoid forcing OpenAI browser cookie imports from the account-switch UI path; that can surface
-        // keychain prompts ("confidential information") while the menu is open and block interaction.
+        // Refresh dashboard state for the selected account, but do not force cookie import. This keeps
+        // account switching responsive and avoids keychain prompt storms.
         let targetEmail = self.codexAccountEmailForOpenAIDashboard()
         self.handleOpenAIWebTargetEmailChangeIfNeeded(targetEmail: targetEmail)
+        await self.refreshOpenAIDashboardIfNeeded(force: false)
     }
 }
 
