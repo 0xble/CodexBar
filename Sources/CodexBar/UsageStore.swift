@@ -4,6 +4,8 @@ import Foundation
 import Observation
 import SweetCookieKit
 
+// swiftlint:disable file_length
+
 // MARK: - Observation helpers
 
 @MainActor
@@ -927,154 +929,175 @@ extension UsageStore {
     func importOpenAIDashboardBrowserCookiesNow() async {
         self.resetOpenAIWebDebugLog(context: "manual import")
         let targetEmail = self.codexAccountEmailForOpenAIDashboard()
-        _ = await self.importOpenAIDashboardCookiesIfNeeded(targetEmail: targetEmail, force: true)
-        await self.refreshOpenAIDashboardIfNeeded(force: true)
+        await ProviderInteractionContext.$current.withValue(.userInitiated) {
+            _ = await self.importOpenAIDashboardCookiesIfNeeded(targetEmail: targetEmail, force: true)
+            await self.refreshOpenAIDashboardIfNeeded(force: true)
+        }
     }
 
     private func importOpenAIDashboardCookiesIfNeeded(targetEmail: String?, force: Bool) async -> String? {
         let normalizedTarget = targetEmail?.trimmingCharacters(in: .whitespacesAndNewlines)
         let allowAnyAccount = normalizedTarget == nil || normalizedTarget?.isEmpty == true
-        let cookieSource = self.settings.codexCookieSource
-
         let now = Date()
-        let lastEmail = self.lastOpenAIDashboardCookieImportEmail
-        let lastAttempt = self.lastOpenAIDashboardCookieImportAttemptAt ?? .distantPast
 
-        let shouldAttempt: Bool = if force {
-            true
-        } else {
-            if allowAnyAccount {
-                now.timeIntervalSince(lastAttempt) > 300
-            } else {
-                self.openAIDashboardRequiresLogin &&
-                    (
-                        lastEmail?.lowercased() != normalizedTarget?.lowercased() || now
-                            .timeIntervalSince(lastAttempt) > 300)
-            }
-        }
+        guard self.shouldAttemptOpenAIDashboardCookieImport(
+            force: force,
+            now: now,
+            normalizedTarget: normalizedTarget,
+            allowAnyAccount: allowAnyAccount)
+        else { return normalizedTarget }
 
-        guard shouldAttempt else { return normalizedTarget }
         self.lastOpenAIDashboardCookieImportEmail = normalizedTarget
         self.lastOpenAIDashboardCookieImportAttemptAt = now
 
         let stamp = now.formatted(date: .abbreviated, time: .shortened)
-        let targetLabel = normalizedTarget ?? "unknown"
-        self.logOpenAIWeb("[\(stamp)] import start (target=\(targetLabel))")
+        self.logOpenAIWeb("[\(stamp)] import start (target=\(normalizedTarget ?? "unknown"))")
+        let log: (String) -> Void = { [weak self] message in self?.logOpenAIWeb(message) }
+        let importer = OpenAIDashboardBrowserCookieImporter(browserDetection: self.browserDetection)
 
         do {
-            let log: (String) -> Void = { [weak self] message in
-                guard let self else { return }
-                self.logOpenAIWeb(message)
-            }
+            guard let result = try await self.resolveOpenAICookieImportResult(
+                importer: importer,
+                normalizedTarget: normalizedTarget,
+                allowAnyAccount: allowAnyAccount,
+                interaction: ProviderInteractionContext.current,
+                log: log)
+            else { return normalizedTarget }
 
-            let importer = OpenAIDashboardBrowserCookieImporter(browserDetection: self.browserDetection)
-            let result: OpenAIDashboardBrowserCookieImporter.ImportResult
-            switch cookieSource {
-            case .manual:
-                self.settings.ensureCodexCookieLoaded()
-                let manualHeader = self.settings.codexCookieHeader
-                guard CookieHeaderNormalizer.normalize(manualHeader) != nil else {
-                    throw OpenAIDashboardBrowserCookieImporter.ImportError.manualCookieHeaderInvalid
-                }
-                result = try await importer.importManualCookies(
-                    cookieHeader: manualHeader,
-                    intoAccountEmail: normalizedTarget,
-                    allowAnyAccount: allowAnyAccount,
-                    logger: log)
-            case .auto:
-                result = try await importer.importBestCookies(
-                    intoAccountEmail: normalizedTarget,
-                    allowAnyAccount: allowAnyAccount,
-                    logger: log)
-            case .off:
-                result = OpenAIDashboardBrowserCookieImporter.ImportResult(
-                    sourceLabel: "Off",
-                    cookieCount: 0,
-                    signedInEmail: normalizedTarget,
-                    matchesCodexEmail: true)
-            }
-            let effectiveEmail = result.signedInEmail?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .isEmpty == false
-                ? result.signedInEmail?.trimmingCharacters(in: .whitespacesAndNewlines)
-                : normalizedTarget
+            let signedIn = result.signedInEmail?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let effectiveEmail = (signedIn?.isEmpty == false ? signedIn : nil) ?? normalizedTarget
             self.lastOpenAIDashboardCookieImportEmail = effectiveEmail ?? normalizedTarget
-            await MainActor.run {
-                let signed = result.signedInEmail?.trimmingCharacters(in: .whitespacesAndNewlines)
-                let matchText = result.matchesCodexEmail ? "matches Codex" : "does not match Codex"
-                let sourceLabel = switch cookieSource {
-                case .manual:
-                    "Manual cookie header"
-                case .auto:
-                    "\(result.sourceLabel) cookies"
-                case .off:
-                    "OpenAI cookies disabled"
-                }
-                if let signed, !signed.isEmpty {
-                    self.openAIDashboardCookieImportStatus =
-                        allowAnyAccount
-                            ? [
-                                "Using \(sourceLabel) (\(result.cookieCount)).",
-                                "Signed in as \(signed).",
-                            ].joined(separator: " ")
-                            : [
-                                "Using \(sourceLabel) (\(result.cookieCount)).",
-                                "Signed in as \(signed) (\(matchText)).",
-                            ].joined(separator: " ")
-                } else {
-                    self.openAIDashboardCookieImportStatus =
-                        "Using \(sourceLabel) (\(result.cookieCount))."
-                }
-            }
+            self.applyOpenAICookieImportStatus(result: result, allowAnyAccount: allowAnyAccount)
             return effectiveEmail
         } catch let err as OpenAIDashboardBrowserCookieImporter.ImportError {
-            switch err {
-            case let .noMatchingAccount(found):
-                let foundText: String = if found.isEmpty {
-                    "no signed-in session detected in \(self.codexBrowserCookieOrder.loginHint)"
-                } else {
-                    found
-                        .sorted { lhs, rhs in
-                            if lhs.sourceLabel == rhs.sourceLabel { return lhs.email < rhs.email }
-                            return lhs.sourceLabel < rhs.sourceLabel
-                        }
-                        .map { "\($0.sourceLabel): \($0.email)" }
-                        .joined(separator: " • ")
-                }
-                self.logOpenAIWeb("[\(stamp)] import mismatch: \(foundText)")
-                await MainActor.run {
-                    self.openAIDashboardCookieImportStatus = allowAnyAccount
-                        ? [
-                            "No signed-in OpenAI web session found.",
-                            "Found \(foundText).",
-                        ].joined(separator: " ")
-                        : [
-                            "Browser cookies do not match Codex account (\(normalizedTarget ?? "unknown")).",
-                            "Found \(foundText).",
-                        ].joined(separator: " ")
-                    // Treat mismatch like "not logged in" for the current Codex account.
-                    self.openAIDashboardRequiresLogin = true
-                    self.openAIDashboard = nil
-                }
-            case .noCookiesFound,
-                 .browserAccessDenied,
-                 .dashboardStillRequiresLogin,
-                 .manualCookieHeaderInvalid:
-                self.logOpenAIWeb("[\(stamp)] import failed: \(err.localizedDescription)")
-                await MainActor.run {
-                    self.openAIDashboardCookieImportStatus =
-                        "OpenAI cookie import failed: \(err.localizedDescription)"
-                    self.openAIDashboardRequiresLogin = true
-                }
-            }
+            self.handleOpenAICookieImportError(
+                err,
+                stamp: stamp,
+                normalizedTarget: normalizedTarget,
+                allowAnyAccount: allowAnyAccount)
         } catch {
             self.logOpenAIWeb("[\(stamp)] import failed: \(error.localizedDescription)")
-            await MainActor.run {
-                self.openAIDashboardCookieImportStatus =
-                    "Browser cookie import failed: \(error.localizedDescription)"
-            }
+            self.openAIDashboardCookieImportStatus = "Browser cookie import failed: \(error.localizedDescription)"
         }
         return nil
+    }
+
+    private func shouldAttemptOpenAIDashboardCookieImport(
+        force: Bool,
+        now: Date,
+        normalizedTarget: String?,
+        allowAnyAccount: Bool) -> Bool
+    {
+        if force { return true }
+        let lastEmail = self.lastOpenAIDashboardCookieImportEmail
+        let lastAttempt = self.lastOpenAIDashboardCookieImportAttemptAt ?? .distantPast
+        if allowAnyAccount {
+            return now.timeIntervalSince(lastAttempt) > 300
+        }
+        return self.openAIDashboardRequiresLogin &&
+            (
+                lastEmail?.lowercased() != normalizedTarget?.lowercased() ||
+                    now.timeIntervalSince(lastAttempt) > 300)
+    }
+
+    private func resolveOpenAICookieImportResult(
+        importer: OpenAIDashboardBrowserCookieImporter,
+        normalizedTarget: String?,
+        allowAnyAccount: Bool,
+        interaction: ProviderInteraction,
+        log: @escaping (String) -> Void) async throws -> OpenAIDashboardBrowserCookieImporter.ImportResult?
+    {
+        switch self.settings.codexCookieSource {
+        case .manual:
+            self.settings.ensureCodexCookieLoaded()
+            let manualHeader = self.settings.codexCookieHeader
+            guard CookieHeaderNormalizer.normalize(manualHeader) != nil else {
+                throw OpenAIDashboardBrowserCookieImporter.ImportError.manualCookieHeaderInvalid
+            }
+            return try await importer.importManualCookies(
+                cookieHeader: manualHeader,
+                intoAccountEmail: normalizedTarget,
+                allowAnyAccount: allowAnyAccount,
+                logger: log)
+        case .off:
+            return OpenAIDashboardBrowserCookieImporter.ImportResult(
+                sourceLabel: "Off",
+                cookieCount: 0,
+                signedInEmail: normalizedTarget,
+                matchesCodexEmail: true)
+        case .auto:
+            if interaction == .userInitiated {
+                return try await importer.importBestCookies(
+                    intoAccountEmail: normalizedTarget,
+                    allowAnyAccount: allowAnyAccount,
+                    logger: log)
+            }
+            if let cached = CookieHeaderCache.load(provider: .codex),
+               !cached.cookieHeader.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            {
+                log("Background refresh using cached OpenAI cookies to avoid macOS app-data prompts.")
+                return try await importer.importManualCookies(
+                    cookieHeader: cached.cookieHeader,
+                    intoAccountEmail: normalizedTarget,
+                    allowAnyAccount: allowAnyAccount,
+                    logger: log)
+            }
+            log("Background refresh deferred browser cookie import until user-initiated refresh.")
+            self.openAIDashboardCookieImportStatus =
+                "OpenAI cookie import deferred to manual refresh to avoid macOS app-data permission prompts."
+            return nil
+        }
+    }
+
+    private func applyOpenAICookieImportStatus(
+        result: OpenAIDashboardBrowserCookieImporter.ImportResult,
+        allowAnyAccount: Bool)
+    {
+        let signed = result.signedInEmail?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sourceLabel = switch self.settings.codexCookieSource {
+        case .manual: "Manual cookie header"
+        case .auto: "\(result.sourceLabel) cookies"
+        case .off: "OpenAI cookies disabled"
+        }
+        if let signed, !signed.isEmpty {
+            let suffix = allowAnyAccount ? "." : " (\(result.matchesCodexEmail ? "matches" : "does not match") Codex)."
+            self.openAIDashboardCookieImportStatus =
+                "Using \(sourceLabel) (\(result.cookieCount)). Signed in as \(signed)\(suffix)"
+            return
+        }
+        self.openAIDashboardCookieImportStatus = "Using \(sourceLabel) (\(result.cookieCount))."
+    }
+
+    private func handleOpenAICookieImportError(
+        _ error: OpenAIDashboardBrowserCookieImporter.ImportError,
+        stamp: String,
+        normalizedTarget: String?,
+        allowAnyAccount: Bool)
+    {
+        switch error {
+        case let .noMatchingAccount(found):
+            let foundText: String = if found.isEmpty {
+                "no signed-in session detected in \(self.codexBrowserCookieOrder.loginHint)"
+            } else {
+                found
+                    .sorted { lhs, rhs in
+                        if lhs.sourceLabel == rhs.sourceLabel { return lhs.email < rhs.email }
+                        return lhs.sourceLabel < rhs.sourceLabel
+                    }
+                    .map { "\($0.sourceLabel): \($0.email)" }
+                    .joined(separator: " • ")
+            }
+            self.logOpenAIWeb("[\(stamp)] import mismatch: \(foundText)")
+            self.openAIDashboardCookieImportStatus = allowAnyAccount
+                ? "No signed-in OpenAI web session found. Found \(foundText)."
+                : "Browser cookies do not match Codex account (\(normalizedTarget ?? "unknown")). Found \(foundText)."
+            self.openAIDashboardRequiresLogin = true
+            self.openAIDashboard = nil
+        case .noCookiesFound, .browserAccessDenied, .dashboardStillRequiresLogin, .manualCookieHeaderInvalid:
+            self.logOpenAIWeb("[\(stamp)] import failed: \(error.localizedDescription)")
+            self.openAIDashboardCookieImportStatus = "OpenAI cookie import failed: \(error.localizedDescription)"
+            self.openAIDashboardRequiresLogin = true
+        }
     }
 
     private func resetOpenAIWebDebugLog(context: String) {
