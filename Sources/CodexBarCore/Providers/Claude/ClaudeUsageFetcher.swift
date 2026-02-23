@@ -409,6 +409,15 @@ public struct ClaudeUsageFetcher: ClaudeUsageFetching, Sendable {
             throw ClaudeUsageError.oauthFailed(error.localizedDescription)
         } catch let error as ClaudeOAuthFetchError {
             ClaudeOAuthCredentialsStore.invalidateCache()
+
+            if case .unauthorized = error,
+               allowDelegatedRetry,
+               let retrySnapshot = await self.retryOAuthAfterUnauthorized(staleAccessToken: self.environment[
+                   ClaudeOAuthCredentialsStore.environmentTokenKey])
+            {
+                return retrySnapshot
+            }
+
             if case let .serverError(statusCode, body) = error,
                statusCode == 403,
                body?.contains("user:profile") ?? false
@@ -421,6 +430,62 @@ public struct ClaudeUsageFetcher: ClaudeUsageFetching, Sendable {
         } catch {
             throw ClaudeUsageError.oauthFailed(error.localizedDescription)
         }
+    }
+
+    private func retryOAuthAfterUnauthorized(staleAccessToken: String?) async -> ClaudeUsageSnapshot? {
+        var strippedEnvironment = self.environment
+        strippedEnvironment.removeValue(forKey: ClaudeOAuthCredentialsStore.environmentTokenKey)
+
+        do {
+            let refreshed = try await ClaudeOAuthCredentialsStore.loadWithAutoRefresh(
+                environment: strippedEnvironment,
+                allowKeychainPrompt: false,
+                respectKeychainPromptCooldown: true)
+            if refreshed.accessToken != staleAccessToken,
+               let snapshot = try await self.retryOAuthUsageWithRecoveredCredentials(
+                   refreshed,
+                   staleAccessToken: staleAccessToken)
+            {
+                return snapshot
+            }
+        } catch {
+            Self.log.debug(
+                "Claude OAuth unauthorized retry: non-interactive reload failed",
+                metadata: ["error": error.localizedDescription])
+        }
+
+        do {
+            let ccsCredentials = try ClaudeOAuthCredentialsStore.loadFromCCSExportFile(
+                matchingAccessToken: staleAccessToken)
+            if ccsCredentials.accessToken != staleAccessToken,
+               let snapshot = try await self.retryOAuthUsageWithRecoveredCredentials(
+                   ccsCredentials,
+                   staleAccessToken: staleAccessToken)
+            {
+                return snapshot
+            }
+        } catch {
+            Self.log.debug(
+                "Claude OAuth unauthorized retry: CCS export fallback failed",
+                metadata: ["error": error.localizedDescription])
+        }
+
+        return nil
+    }
+
+    private func retryOAuthUsageWithRecoveredCredentials(
+        _ credentials: ClaudeOAuthCredentials,
+        staleAccessToken: String?) async throws -> ClaudeUsageSnapshot?
+    {
+        if credentials.accessToken == staleAccessToken {
+            return nil
+        }
+        guard credentials.scopes.contains("user:profile") else {
+            return nil
+        }
+
+        let usage = try await Self.fetchOAuthUsage(accessToken: credentials.accessToken)
+        return try Self.mapOAuthUsage(usage, credentials: credentials)
     }
 
     private func loadViaOAuthAfterDelegatedRefresh(allowDelegatedRetry: Bool) async throws -> ClaudeUsageSnapshot {

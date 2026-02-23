@@ -13,6 +13,7 @@ import Security
 // swiftlint:disable type_body_length
 public enum ClaudeOAuthCredentialsStore {
     private static let credentialsPath = ".claude/.credentials.json"
+    private static let ccsExportPath = ".config/secrets/claude-oauth.json"
     static let claudeKeychainService = "Claude Code-credentials"
     private static let cacheKey = KeychainCacheStore.Key.oauth(provider: .claude)
     public static let environmentTokenKey = "CODEXBAR_CLAUDE_OAUTH_TOKEN"
@@ -65,8 +66,10 @@ public enum ClaudeOAuthCredentialsStore {
     }
 
     private nonisolated(unsafe) static var credentialsURLOverride: URL?
+    private nonisolated(unsafe) static var ccsExportURLOverride: URL?
     #if DEBUG
     @TaskLocal private static var taskCredentialsURLOverride: URL?
+    @TaskLocal private static var taskCCSExportURLOverride: URL?
     #endif
     @TaskLocal static var allowBackgroundPromptBootstrap: Bool = false
     // In-memory cache (nonisolated for synchronous access)
@@ -222,7 +225,35 @@ public enum ClaudeOAuthCredentialsStore {
             lastError = error
         }
 
-        // 3.5 Try Claude keychain without prompting (repair path; may still show UI on some systems).
+        // 3.5 Try CCS export fallback (no prompts).
+        // This helps machines without Claude CLI/keychain access but with synced CCS exports.
+        do {
+            let hintToken = environment[self.environmentTokenKey]
+            let ccsRecord = try self.loadRecordFromCCSExportFile(matchingAccessToken: hintToken)
+            if ccsRecord.credentials.isExpired {
+                expiredRecord = ccsRecord
+            } else {
+                self.log.info("Claude OAuth credentials loaded from CCS export fallback")
+                self.writeMemoryCache(
+                    record: ClaudeOAuthCredentialRecord(
+                        credentials: ccsRecord.credentials,
+                        owner: ccsRecord.owner,
+                        source: .memoryCache),
+                    timestamp: Date())
+                self.saveRefreshedCredentialsToCache(ccsRecord.credentials, owner: .claudeCLI)
+                return ccsRecord
+            }
+        } catch let error as ClaudeOAuthCredentialsError {
+            if case .notFound = error {
+                // Ignore missing CCS export.
+            } else {
+                lastError = error
+            }
+        } catch {
+            lastError = error
+        }
+
+        // 4. Try Claude keychain without prompting (repair path; may still show UI on some systems).
         // Only attempt this when prompts are disallowed; otherwise, go straight to the interactive path.
         if allowClaudeKeychainRepairWithoutPrompt, !allowKeychainPrompt {
             if let repaired = self.repairFromClaudeKeychainWithoutPromptIfAllowed(
@@ -233,7 +264,7 @@ public enum ClaudeOAuthCredentialsStore {
             }
         }
 
-        // 4. Fall back to Claude's keychain (may prompt user if allowed)
+        // 5. Fall back to Claude's keychain (may prompt user if allowed)
         if let prompted = self.loadFromClaudeKeychainWithPromptIfAllowed(
             allowKeychainPrompt: allowKeychainPrompt,
             respectKeychainPromptCooldown: respectKeychainPromptCooldown,
@@ -437,8 +468,11 @@ public enum ClaudeOAuthCredentialsStore {
         }
     }
 
-    /// Save refreshed credentials to CodexBar's keychain cache
-    private static func saveRefreshedCredentialsToCache(_ credentials: ClaudeOAuthCredentials) {
+    /// Save credentials to CodexBar's keychain cache.
+    private static func saveRefreshedCredentialsToCache(
+        _ credentials: ClaudeOAuthCredentials,
+        owner: ClaudeOAuthCredentialOwner = .codexbar)
+    {
         var oauth: [String: Any] = [
             "accessToken": credentials.accessToken,
             "expiresAt": (credentials.expiresAt?.timeIntervalSince1970 ?? 0) * 1000,
@@ -459,7 +493,7 @@ public enum ClaudeOAuthCredentialsStore {
             return
         }
 
-        self.saveToCacheKeychain(jsonData, owner: .codexbar)
+        self.saveToCacheKeychain(jsonData, owner: owner)
         self.log.debug("Saved refreshed credentials to CodexBar keychain cache")
     }
 
@@ -478,6 +512,39 @@ public enum ClaudeOAuthCredentialsStore {
         }
     }
 
+    private struct CCSOAuthExport: Decodable {
+        let accounts: [CCSOAuthAccount]
+    }
+
+    private struct CCSOAuthAccount: Decodable {
+        let key: String?
+        let name: String?
+        let accessToken: String
+        let refreshToken: String?
+        let expiresAt: Double?
+        let scopes: [String]?
+        let rateLimitTier: String?
+
+        enum CodingKeys: String, CodingKey {
+            case key
+            case name
+            case accessToken = "access_token"
+            case refreshToken = "refresh_token"
+            case expiresAt = "expires_at"
+            case scopes
+            case rateLimitTier = "rate_limit_tier"
+        }
+    }
+
+    public static func loadFromCCSExportFile(
+        matchingAccessToken: String? = nil,
+        accountNameHint: String? = nil) throws -> ClaudeOAuthCredentials
+    {
+        try self.loadRecordFromCCSExportFile(
+            matchingAccessToken: matchingAccessToken,
+            accountNameHint: accountNameHint).credentials
+    }
+
     public static func loadFromFile() throws -> Data {
         let url = self.credentialsFileURL()
         do {
@@ -488,6 +555,134 @@ public enum ClaudeOAuthCredentialsStore {
             }
             throw ClaudeOAuthCredentialsError.readFailed(error.localizedDescription)
         }
+    }
+
+    private static func loadRecordFromCCSExportFile(
+        matchingAccessToken: String? = nil,
+        accountNameHint: String? = nil) throws -> ClaudeOAuthCredentialRecord
+    {
+        let url = self.ccsExportFileURL()
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch {
+            if (error as NSError).code == NSFileReadNoSuchFileError {
+                throw ClaudeOAuthCredentialsError.notFound
+            }
+            throw ClaudeOAuthCredentialsError.readFailed(error.localizedDescription)
+        }
+
+        let export: CCSOAuthExport
+        do {
+            export = try JSONDecoder().decode(CCSOAuthExport.self, from: data)
+        } catch {
+            throw ClaudeOAuthCredentialsError.decodeFailed
+        }
+
+        let account = self.selectCCSAccount(
+            from: export.accounts,
+            matchingAccessToken: matchingAccessToken,
+            accountNameHint: accountNameHint)
+
+        guard let account else {
+            throw ClaudeOAuthCredentialsError.notFound
+        }
+
+        let credentials = self.credentials(fromCCSAccount: account)
+        return ClaudeOAuthCredentialRecord(
+            credentials: credentials,
+            owner: .claudeCLI,
+            source: .ccsExportFile)
+    }
+
+    private static func selectCCSAccount(
+        from accounts: [CCSOAuthAccount],
+        matchingAccessToken: String?,
+        accountNameHint: String?) -> CCSOAuthAccount?
+    {
+        let normalizedAccounts = accounts.filter {
+            !$0.accessToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        guard !normalizedAccounts.isEmpty else { return nil }
+
+        if let nameHint = accountNameHint?.trimmingCharacters(in: .whitespacesAndNewlines), !nameHint.isEmpty,
+           let named = normalizedAccounts.first(where: {
+               guard let name = $0.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else {
+                   return false
+               }
+               return name.caseInsensitiveCompare(nameHint) == .orderedSame
+           })
+        {
+            return named
+        }
+
+        if let rawToken = matchingAccessToken?.trimmingCharacters(in: .whitespacesAndNewlines), !rawToken.isEmpty {
+            if let exact = normalizedAccounts.first(where: {
+                $0.accessToken.trimmingCharacters(in: .whitespacesAndNewlines) == rawToken
+            }) {
+                return exact
+            }
+
+            let ranked = normalizedAccounts
+                .map { account in
+                    (account: account, score: self.sharedPrefixLength(rawToken, account.accessToken))
+                }
+                .sorted {
+                    if $0.score == $1.score {
+                        return ($0.account.expiresAt ?? 0) > ($1.account.expiresAt ?? 0)
+                    }
+                    return $0.score > $1.score
+                }
+
+            if let best = ranked.first {
+                if ranked.count == 1 {
+                    return best.account
+                }
+                if best.score > 16 {
+                    return best.account
+                }
+            }
+        }
+
+        let nonExpired = normalizedAccounts
+            .filter {
+                guard let expiresAt = $0.expiresAt else { return false }
+                return Date(timeIntervalSince1970: expiresAt / 1000.0) > Date()
+            }
+            .sorted { ($0.expiresAt ?? 0) > ($1.expiresAt ?? 0) }
+
+        if let latestNonExpired = nonExpired.first {
+            return latestNonExpired
+        }
+
+        return normalizedAccounts.sorted { ($0.expiresAt ?? 0) > ($1.expiresAt ?? 0) }.first
+    }
+
+    private static func sharedPrefixLength(_ lhs: String, _ rhs: String) -> Int {
+        let lhsChars = Array(lhs)
+        let rhsChars = Array(rhs)
+        let maxLen = min(lhsChars.count, rhsChars.count)
+        guard maxLen > 0 else { return 0 }
+
+        var count = 0
+        while count < maxLen, lhsChars[count] == rhsChars[count] {
+            count += 1
+        }
+        return count
+    }
+
+    private static func credentials(fromCCSAccount account: CCSOAuthAccount) -> ClaudeOAuthCredentials {
+        let scopes = account.scopes ?? []
+        let expiresAt = account.expiresAt.map { Date(timeIntervalSince1970: $0 / 1000.0) }
+        let accessToken = account.accessToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        let refreshToken = account.refreshToken?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return ClaudeOAuthCredentials(
+            accessToken: accessToken,
+            refreshToken: refreshToken,
+            expiresAt: expiresAt,
+            scopes: scopes,
+            rateLimitTier: account.rateLimitTier)
     }
 
     @discardableResult
@@ -1322,6 +1517,10 @@ public enum ClaudeOAuthCredentialsStore {
         self.credentialsURLOverride = url
     }
 
+    static func setCCSExportURLOverrideForTesting(_ url: URL?) {
+        self.ccsExportURLOverride = url
+    }
+
     #if DEBUG
     static func withCredentialsURLOverrideForTesting<T>(
         _ url: URL?,
@@ -1337,6 +1536,24 @@ public enum ClaudeOAuthCredentialsStore {
         operation: () async throws -> T) async rethrows -> T
     {
         try await self.$taskCredentialsURLOverride.withValue(url) {
+            try await operation()
+        }
+    }
+
+    static func withCCSExportURLOverrideForTesting<T>(
+        _ url: URL?,
+        operation: () throws -> T) rethrows -> T
+    {
+        try self.$taskCCSExportURLOverride.withValue(url) {
+            try operation()
+        }
+    }
+
+    static func withCCSExportURLOverrideForTesting<T>(
+        _ url: URL?,
+        operation: () async throws -> T) async rethrows -> T
+    {
+        try await self.$taskCCSExportURLOverride.withValue(url) {
             try await operation()
         }
     }
@@ -1440,6 +1657,13 @@ public enum ClaudeOAuthCredentialsStore {
         return self.credentialsURLOverride ?? self.defaultCredentialsURL()
     }
 
+    private static func ccsExportFileURL() -> URL {
+        #if DEBUG
+        if let override = self.taskCCSExportURLOverride { return override }
+        #endif
+        return self.ccsExportURLOverride ?? self.defaultCCSExportFileURL()
+    }
+
     private static func loadFileFingerprint() -> CredentialsFileFingerprint? {
         #if DEBUG
         if let store = self.taskCredentialsFileFingerprintStoreOverride { return store.load() }
@@ -1499,6 +1723,11 @@ public enum ClaudeOAuthCredentialsStore {
     private static func defaultCredentialsURL() -> URL {
         let home = FileManager.default.homeDirectoryForCurrentUser
         return home.appendingPathComponent(self.credentialsPath)
+    }
+
+    private static func defaultCCSExportFileURL() -> URL {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        return home.appendingPathComponent(self.ccsExportPath)
     }
 }
 

@@ -22,6 +22,20 @@ struct ClaudeOAuthCredentialsStoreTests {
         return Data(json.utf8)
     }
 
+    private func makeCCSExportData(accounts: [String]) -> Data {
+        let accountJSON = accounts.joined(separator: ",\n")
+        let json = """
+        {
+          "version": 1,
+          "generated_at": "2026-02-23T03:12:04Z",
+          "accounts": [
+            \(accountJSON)
+          ]
+        }
+        """
+        return Data(json.utf8)
+    }
+
     @Test
     func loadsFromKeychainCacheBeforeExpiredFile() throws {
         let service = "com.steipete.codexbar.cache.tests.\(UUID().uuidString)"
@@ -186,6 +200,108 @@ struct ClaudeOAuthCredentialsStoreTests {
 
                 let creds = try ClaudeOAuthCredentialsStore.load(environment: [:])
                 #expect(creds.accessToken == "second")
+            }
+        }
+    }
+
+    @Test
+    func loadFromCCSExportFile_parsesAndMatchesByTokenPrefix() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        let ccsURL = tempDir.appendingPathComponent("claude-oauth.json")
+
+        let exportData = self.makeCCSExportData(accounts: [
+            """
+            {
+              "key": "brian-primary",
+              "name": "brian@brianle.xyz",
+              "access_token": "sk-ant-oat01-brian-primary-fresh-123456",
+              "refresh_token": "sk-ant-ort01-brian-primary-refresh-123456",
+              "expires_at": 1772000000000,
+              "scopes": ["user:profile", "user:inference"],
+              "rate_limit_tier": "default_claude_max_20x"
+            }
+            """,
+            """
+            {
+              "key": "other-account",
+              "name": "other@example.com",
+              "access_token": "sk-ant-oat01-other-account-fresh-654321",
+              "refresh_token": "sk-ant-ort01-other-refresh-654321",
+              "expires_at": 1771000000000,
+              "scopes": ["user:profile"],
+              "rate_limit_tier": "default"
+            }
+            """,
+        ])
+        try exportData.write(to: ccsURL)
+
+        let creds = try ClaudeOAuthCredentialsStore.withCCSExportURLOverrideForTesting(ccsURL) {
+            try ClaudeOAuthCredentialsStore.loadFromCCSExportFile(
+                matchingAccessToken: "sk-ant-oat01-brian-primary-stale-000000")
+        }
+
+        #expect(creds.accessToken == "sk-ant-oat01-brian-primary-fresh-123456")
+        #expect(creds.refreshToken == "sk-ant-ort01-brian-primary-refresh-123456")
+        #expect(creds.scopes.contains("user:profile"))
+        #expect(creds.rateLimitTier == "default_claude_max_20x")
+        #expect(creds.expiresAt != nil)
+    }
+
+    @Test
+    func loadRecord_usesCCSExportFallbackWhenCredentialsFileMissing() throws {
+        let service = "com.steipete.codexbar.cache.tests.\(UUID().uuidString)"
+        try KeychainCacheStore.withServiceOverrideForTesting(service) {
+            KeychainCacheStore.setTestStoreForTesting(true)
+            defer { KeychainCacheStore.setTestStoreForTesting(false) }
+
+            ClaudeOAuthCredentialsStore._resetCredentialsFileTrackingForTesting()
+            defer { ClaudeOAuthCredentialsStore._resetCredentialsFileTrackingForTesting() }
+
+            try ClaudeOAuthCredentialsStore.withIsolatedCredentialsFileTrackingForTesting {
+                try ClaudeOAuthCredentialsStore.withIsolatedMemoryCacheForTesting {
+                    try ClaudeOAuthCredentialsStore.withKeychainAccessOverrideForTesting(true) {
+                        let tempDir = FileManager.default.temporaryDirectory
+                            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+                        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+                        let missingCredentialsURL = tempDir.appendingPathComponent("credentials.json")
+                        let ccsURL = tempDir.appendingPathComponent("claude-oauth.json")
+
+                        let exportData = self.makeCCSExportData(accounts: [
+                            """
+                            {
+                              "key": "brian-primary",
+                              "name": "brian@brianle.xyz",
+                              "access_token": "sk-ant-oat01-brian-primary-fresh-123456",
+                              "refresh_token": "sk-ant-ort01-brian-primary-refresh-123456",
+                              "expires_at": 4102444800000,
+                              "scopes": ["user:profile", "user:inference"],
+                              "rate_limit_tier": "default_claude_max_20x"
+                            }
+                            """,
+                        ])
+                        try exportData.write(to: ccsURL)
+
+                        let record = try ClaudeOAuthCredentialsStore
+                            .withCredentialsURLOverrideForTesting(missingCredentialsURL) {
+                                try ClaudeOAuthCredentialsStore.withCCSExportURLOverrideForTesting(ccsURL) {
+                                    try ClaudeOAuthCredentialsStore.loadRecord(
+                                        environment: [
+                                            ClaudeOAuthCredentialsStore.environmentTokenKey:
+                                                "sk-ant-oat01-brian-primary-stale-000000",
+                                        ],
+                                        allowKeychainPrompt: false,
+                                        respectKeychainPromptCooldown: true,
+                                        allowClaudeKeychainRepairWithoutPrompt: false)
+                                }
+                            }
+
+                        #expect(record.source == .ccsExportFile)
+                        #expect(record.owner == .claudeCLI)
+                        #expect(record.credentials.accessToken == "sk-ant-oat01-brian-primary-fresh-123456")
+                    }
+                }
             }
         }
     }

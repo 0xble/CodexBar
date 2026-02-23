@@ -117,6 +117,7 @@ public enum ClaudeOAuthCredentialSource: String, Sendable {
     case memoryCache
     case cacheKeychain
     case credentialsFile
+    case ccsExportFile
     case claudeKeychain
 }
 

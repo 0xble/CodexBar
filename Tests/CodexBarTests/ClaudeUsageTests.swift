@@ -18,6 +18,18 @@ struct ClaudeUsageTests {
         }
     }
 
+    private actor AccessTokenAttempts {
+        private var values: [String] = []
+
+        func append(_ value: String) {
+            self.values.append(value)
+        }
+
+        func all() -> [String] {
+            self.values
+        }
+    }
+
     private static func makeOAuthUsageResponse() throws -> OAuthUsageResponse {
         let json = """
         {
@@ -26,6 +38,28 @@ struct ClaudeUsageTests {
         }
         """
         return try ClaudeOAuthUsageFetcher._decodeUsageResponseForTesting(Data(json.utf8))
+    }
+
+    private static func makeCCSExportData(accessToken: String, refreshToken: String) -> Data {
+        let json = """
+        {
+          "version": 1,
+          "generated_at": "2026-02-23T03:12:04Z",
+          "accounts": [
+            {
+              "key": "brian-brianle-xyz",
+              "name": "brian@brianle.xyz",
+              "access_token": "\(accessToken)",
+              "refresh_token": "\(refreshToken)",
+              "expires_at": 4102444800000,
+              "scopes": ["user:profile", "user:inference"],
+              "subscription_type": "max",
+              "rate_limit_tier": "default_claude_max_20x"
+            }
+          ]
+        }
+        """
+        return Data(json.utf8)
     }
 
     @Test
@@ -99,6 +133,69 @@ struct ClaudeUsageTests {
         #expect(await delegatedCounter.current() == 1)
         #expect(snapshot.primary.usedPercent == 7)
         #expect(snapshot.secondary?.usedPercent == 21)
+    }
+
+    @Test
+    func oauthUnauthorizedRetry_recoversFromCCSExportWhenTokenAccountIsStale() async throws {
+        let staleToken = "sk-ant-oat01-brian-primary-stale-000000"
+        let freshToken = "sk-ant-oat01-brian-primary-fresh-123456"
+        let usageResponse = try Self.makeOAuthUsageResponse()
+        let attempts = AccessTokenAttempts()
+        let service = "com.steipete.codexbar.cache.tests.\(UUID().uuidString)"
+
+        let fetcher = ClaudeUsageFetcher(
+            browserDetection: BrowserDetection(cacheTTL: 0),
+            environment: [ClaudeOAuthCredentialsStore.environmentTokenKey: staleToken],
+            dataSource: .oauth,
+            oauthKeychainPromptCooldownEnabled: true)
+
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        let missingCredentialsURL = tempDir.appendingPathComponent("credentials.json")
+        let ccsURL = tempDir.appendingPathComponent("claude-oauth.json")
+        try Self.makeCCSExportData(
+            accessToken: freshToken,
+            refreshToken: "sk-ant-ort01-brian-primary-refresh-123456")
+            .write(to: ccsURL)
+
+        let fetchOverride: (@Sendable (String) async throws -> OAuthUsageResponse)? = { accessToken in
+            await attempts.append(accessToken)
+            if accessToken == staleToken {
+                throw ClaudeOAuthFetchError.unauthorized
+            }
+            if accessToken == freshToken {
+                return usageResponse
+            }
+            throw ClaudeOAuthFetchError.unauthorized
+        }
+
+        let snapshot = try await KeychainCacheStore.withServiceOverrideForTesting(service) {
+            KeychainCacheStore.setTestStoreForTesting(true)
+            defer { KeychainCacheStore.setTestStoreForTesting(false) }
+
+            return try await ClaudeOAuthCredentialsStore.withIsolatedCredentialsFileTrackingForTesting {
+                try await ClaudeOAuthCredentialsStore.withIsolatedMemoryCacheForTesting {
+                    try await ClaudeOAuthCredentialsStore.withKeychainAccessOverrideForTesting(true) {
+                        try await ClaudeOAuthCredentialsStore.withCredentialsURLOverrideForTesting(
+                            missingCredentialsURL)
+                        {
+                            try await ClaudeOAuthCredentialsStore.withCCSExportURLOverrideForTesting(ccsURL) {
+                                try await ClaudeUsageFetcher.$fetchOAuthUsageOverride.withValue(fetchOverride) {
+                                    try await fetcher.loadLatestUsage(model: "sonnet")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        #expect(snapshot.primary.usedPercent == 7)
+        #expect(snapshot.secondary?.usedPercent == 21)
+
+        let tokens = await attempts.all()
+        #expect(tokens == [staleToken, freshToken])
     }
 
     @Test
