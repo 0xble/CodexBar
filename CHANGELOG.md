@@ -1,6 +1,16 @@
 # Changelog
 
+## Fork Convention (0xble)
+
+- Upstream entries are implicit by default (no prefix required).
+- Prefix fork-authored divergences with `[FORK]`.
+- Prefix uncommitted/local-only work with `[LOCAL]`.
+
 ## Unreleased
+
+### Fork
+- [LOCAL] Add fork changelog convention block for divergence tracking in this fork (uncommitted).
+
 ### Highlights
 - Add an experimental option to suppress Claude Keychain prompts.
 - Add OpenRouter provider for credit-based usage tracking (#396). Thanks @chountalas!
