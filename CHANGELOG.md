@@ -9,7 +9,12 @@
 ## Unreleased
 
 ### Fork
-- [LOCAL] Add fork changelog convention block for divergence tracking in this fork (uncommitted).
+- [FORK] Add fork changelog convention and upstream sync workflow.
+- [FORK] Add refresh-token recovery and revoked-403 retry for Claude OAuth credentials.
+- [FORK] Add 401 retry with CCS export fallback for stale token accounts.
+- [FORK] Gate auto cookie import to run only in background refresh.
+- [FORK] Harden Codex account switching: sync credits/dashboard, gate CLI credits to selected account, avoid keychain prompt on switch.
+- [FORK] Detect SourceKit runtime path for lint script.
 
 ### Highlights
 - Add a merged-menu Overview tab with configurable providers and row-to-provider navigation (#416).
