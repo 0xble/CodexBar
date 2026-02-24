@@ -700,6 +700,8 @@ final class UsageStore {
 
 extension UsageStore {
     private static let openAIWebRefreshMultiplier: TimeInterval = 5
+    private static let openAIWebPrimaryFetchTimeout: TimeInterval = 15
+    private static let openAIWebRetryFetchTimeout: TimeInterval = 8
 
     private func openAIWebRefreshIntervalSeconds() -> TimeInterval {
         let base = max(self.settings.refreshFrequency.seconds ?? 0, 120)
@@ -809,7 +811,8 @@ extension UsageStore {
             var dash = try await OpenAIDashboardFetcher().loadLatestDashboard(
                 accountEmail: effectiveEmail,
                 logger: log,
-                debugDumpHTML: false)
+                debugDumpHTML: false,
+                timeout: Self.openAIWebPrimaryFetchTimeout)
 
             if self.dashboardEmailMismatch(expected: normalized, actual: dash.signedInEmail) {
                 if !accountDidChange || force {
@@ -823,7 +826,8 @@ extension UsageStore {
                 dash = try await OpenAIDashboardFetcher().loadLatestDashboard(
                     accountEmail: effectiveEmail,
                     logger: log,
-                    debugDumpHTML: false)
+                    debugDumpHTML: false,
+                    timeout: Self.openAIWebRetryFetchTimeout)
             }
 
             if self.dashboardEmailMismatch(expected: normalized, actual: dash.signedInEmail) {
@@ -854,7 +858,8 @@ extension UsageStore {
                 let dash = try await OpenAIDashboardFetcher().loadLatestDashboard(
                     accountEmail: effectiveEmail,
                     logger: log,
-                    debugDumpHTML: true)
+                    debugDumpHTML: true,
+                    timeout: Self.openAIWebRetryFetchTimeout)
                 await self.applyOpenAIDashboard(dash, targetEmail: effectiveEmail)
             } catch let OpenAIDashboardFetcher.FetchError.noDashboardData(retryBody) {
                 let finalBody = retryBody.isEmpty ? body : retryBody
@@ -879,7 +884,8 @@ extension UsageStore {
                 let dash = try await OpenAIDashboardFetcher().loadLatestDashboard(
                     accountEmail: effectiveEmail,
                     logger: log,
-                    debugDumpHTML: true)
+                    debugDumpHTML: true,
+                    timeout: Self.openAIWebRetryFetchTimeout)
                 await self.applyOpenAIDashboard(dash, targetEmail: effectiveEmail)
             } catch OpenAIDashboardFetcher.FetchError.loginRequired {
                 await MainActor.run {
