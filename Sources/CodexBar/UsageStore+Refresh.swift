@@ -88,6 +88,10 @@ extension UsageStore {
                 self.lastSourceLabels[provider] = result.sourceLabel
                 self.errors[provider] = nil
                 self.failureGates[provider]?.recordSuccess()
+                if provider == .codex, let credits = result.credits {
+                    self.credits = credits
+                    self.lastCreditsError = nil
+                }
             }
             if let runtime = self.providerRuntimes[provider] {
                 let context = ProviderRuntimeContext(

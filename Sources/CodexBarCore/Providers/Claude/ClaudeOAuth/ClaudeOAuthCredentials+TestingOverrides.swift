@@ -2,6 +2,11 @@ import Foundation
 
 #if DEBUG
 extension ClaudeOAuthCredentialsStore {
+    typealias RefreshAccessTokenOverride = @Sendable (
+        String,
+        [String],
+        String?) async throws -> ClaudeOAuthCredentials
+
     nonisolated(unsafe) static var claudeKeychainDataOverride: Data?
     nonisolated(unsafe) static var claudeKeychainFingerprintOverride: ClaudeKeychainFingerprint?
     @TaskLocal static var taskClaudeKeychainDataOverride: Data?
@@ -113,6 +118,7 @@ extension ClaudeOAuthCredentialsStore {
     @TaskLocal static var taskCredentialsFileFingerprintStoreOverride: CredentialsFileFingerprintStore?
     @TaskLocal static var taskSecurityCLIReadOverride: SecurityCLIReadOverride?
     @TaskLocal static var taskSecurityCLIReadAccountOverride: String?
+    @TaskLocal static var taskRefreshAccessTokenOverride: RefreshAccessTokenOverride?
     nonisolated(unsafe) static var securityCLIReadOverride: SecurityCLIReadOverride?
 
     static func withKeychainAccessOverrideForTesting<T>(
@@ -207,6 +213,24 @@ extension ClaudeOAuthCredentialsStore {
 
     static func setSecurityCLIReadOverrideForTesting(_ readOverride: SecurityCLIReadOverride?) {
         self.securityCLIReadOverride = readOverride
+    }
+
+    static func withRefreshAccessTokenOverrideForTesting<T>(
+        _ override: RefreshAccessTokenOverride?,
+        operation: () throws -> T) rethrows -> T
+    {
+        try self.$taskRefreshAccessTokenOverride.withValue(override) {
+            try operation()
+        }
+    }
+
+    static func withRefreshAccessTokenOverrideForTesting<T>(
+        _ override: RefreshAccessTokenOverride?,
+        operation: () async throws -> T) async rethrows -> T
+    {
+        try await self.$taskRefreshAccessTokenOverride.withValue(override) {
+            try await operation()
+        }
     }
 }
 #endif

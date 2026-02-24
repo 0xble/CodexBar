@@ -625,6 +625,15 @@ final class UsageStore {
 
     private func refreshCreditsIfNeeded() async {
         guard self.isEnabled(.codex) else { return }
+
+        if self.settings.codexUsageDataSource == .oauth {
+            await MainActor.run {
+                self.lastCreditsError = nil
+                self.creditsFailureStreak = 0
+            }
+            return
+        }
+
         let selectedEmail = self.selectedCodexTokenAccountEmailForOpenAIDashboard()
         let cliEmail = Self.normalizedCodexAccountEmail(self.codexFetcher.loadAccountInfo().email)
         if !Self.shouldUseCodexCLICredits(selectedEmail: selectedEmail, cliEmail: cliEmail) {

@@ -58,14 +58,6 @@ let package = Package(
                 swiftSettings: [
                     .enableUpcomingFeature("StrictConcurrency"),
                 ]),
-            .testTarget(
-                name: "CodexBarLinuxTests",
-                dependencies: ["CodexBarCore", "CodexBarCLI"],
-                path: "TestsLinux",
-                swiftSettings: [
-                    .enableUpcomingFeature("StrictConcurrency"),
-                    .enableExperimentalFeature("SwiftTesting"),
-                ]),
         ]
 
         #if os(macOS)
@@ -112,8 +104,24 @@ let package = Package(
 
         targets.append(.testTarget(
             name: "CodexBarTests",
-            dependencies: ["CodexBar", "CodexBarCore", "CodexBarCLI"],
+            dependencies: [
+                "CodexBar",
+                "CodexBarCore",
+                "CodexBarCLI",
+            ],
             path: "Tests",
+            swiftSettings: [
+                .enableUpcomingFeature("StrictConcurrency"),
+                .enableExperimentalFeature("SwiftTesting"),
+            ]))
+        #else
+        targets.append(.testTarget(
+            name: "CodexBarLinuxTests",
+            dependencies: [
+                "CodexBarCore",
+                "CodexBarCLI",
+            ],
+            path: "TestsLinux",
             swiftSettings: [
                 .enableUpcomingFeature("StrictConcurrency"),
                 .enableExperimentalFeature("SwiftTesting"),

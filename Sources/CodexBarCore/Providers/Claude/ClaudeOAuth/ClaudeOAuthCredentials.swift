@@ -10,13 +10,14 @@ import LocalAuthentication
 import Security
 #endif
 
-// swiftlint:disable type_body_length
+// swiftlint:disable type_body_length file_length cyclomatic_complexity
 public enum ClaudeOAuthCredentialsStore {
     private static let credentialsPath = ".claude/.credentials.json"
     private static let ccsExportPath = ".config/secrets/claude-oauth.json"
     static let claudeKeychainService = "Claude Code-credentials"
     private static let cacheKey = KeychainCacheStore.Key.oauth(provider: .claude)
     public static let environmentTokenKey = "CODEXBAR_CLAUDE_OAUTH_TOKEN"
+    public static let environmentTokenHintKey = "CODEXBAR_CLAUDE_OAUTH_TOKEN_HINT"
     public static let environmentScopesKey = "CODEXBAR_CLAUDE_OAUTH_SCOPES"
 
     // Claude CLI's OAuth client ID - this is a public identifier (not a secret).
@@ -225,32 +226,37 @@ public enum ClaudeOAuthCredentialsStore {
             lastError = error
         }
 
-        // 3.5 Try CCS export fallback (no prompts).
-        // This helps machines without Claude CLI/keychain access but with synced CCS exports.
-        do {
-            let hintToken = environment[self.environmentTokenKey]
-            let ccsRecord = try self.loadRecordFromCCSExportFile(matchingAccessToken: hintToken)
-            if ccsRecord.credentials.isExpired {
-                expiredRecord = ccsRecord
-            } else {
-                self.log.info("Claude OAuth credentials loaded from CCS export fallback")
-                self.writeMemoryCache(
-                    record: ClaudeOAuthCredentialRecord(
-                        credentials: ccsRecord.credentials,
-                        owner: ccsRecord.owner,
-                        source: .memoryCache),
-                    timestamp: Date())
-                self.saveRefreshedCredentialsToCache(ccsRecord.credentials, owner: .claudeCLI)
-                return ccsRecord
-            }
-        } catch let error as ClaudeOAuthCredentialsError {
-            if case .notFound = error {
-                // Ignore missing CCS export.
-            } else {
+        // 3.5 Try CCS export fallback (no prompts) only when we have an explicit stale-token hint.
+        // This keeps fallback deterministic and avoids ambient machine state from overriding
+        // explicit test/fixture sources.
+        if let hintToken = environment[self.environmentTokenHintKey]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !hintToken.isEmpty
+        {
+            do {
+                let ccsRecord = try self.loadRecordFromCCSExportFile(matchingAccessToken: hintToken)
+                if ccsRecord.credentials.isExpired {
+                    expiredRecord = ccsRecord
+                } else {
+                    self.log.info("Claude OAuth credentials loaded from CCS export fallback")
+                    self.writeMemoryCache(
+                        record: ClaudeOAuthCredentialRecord(
+                            credentials: ccsRecord.credentials,
+                            owner: ccsRecord.owner,
+                            source: .memoryCache),
+                        timestamp: Date())
+                    self.saveRefreshedCredentialsToCache(ccsRecord.credentials, owner: .claudeCLI)
+                    return ccsRecord
+                }
+            } catch let error as ClaudeOAuthCredentialsError {
+                if case .notFound = error {
+                    // Ignore missing CCS export.
+                } else {
+                    lastError = error
+                }
+            } catch {
                 lastError = error
             }
-        } catch {
-            lastError = error
         }
 
         // 4. Try Claude keychain without prompting (repair path; may still show UI on some systems).
@@ -655,7 +661,7 @@ public enum ClaudeOAuthCredentialsStore {
             return latestNonExpired
         }
 
-        return normalizedAccounts.sorted { ($0.expiresAt ?? 0) > ($1.expiresAt ?? 0) }.first
+        return normalizedAccounts.max { ($0.expiresAt ?? 0) < ($1.expiresAt ?? 0) }
     }
 
     private static func sharedPrefixLength(_ lhs: String, _ rhs: String) -> Int {
@@ -1858,10 +1864,22 @@ extension ClaudeOAuthCredentialsStore {
         existingScopes: [String],
         existingRateLimitTier: String?) async throws -> ClaudeOAuthCredentials
     {
-        let newCredentials = try await self.refreshAccessTokenCore(
+        let newCredentials: ClaudeOAuthCredentials
+        #if DEBUG
+        if let override = self.taskRefreshAccessTokenOverride {
+            newCredentials = try await override(refreshToken, existingScopes, existingRateLimitTier)
+        } else {
+            newCredentials = try await self.refreshAccessTokenCore(
+                refreshToken: refreshToken,
+                existingScopes: existingScopes,
+                existingRateLimitTier: existingRateLimitTier)
+        }
+        #else
+        newCredentials = try await self.refreshAccessTokenCore(
             refreshToken: refreshToken,
             existingScopes: existingScopes,
             existingRateLimitTier: existingRateLimitTier)
+        #endif
 
         // Save to CodexBar's keychain cache (not Claude's keychain)
         self.saveRefreshedCredentialsToCache(newCredentials)
@@ -1989,3 +2007,5 @@ extension ClaudeOAuthCredentialsStore {
     }
     #endif
 }
+
+// swiftlint:enable file_length cyclomatic_complexity

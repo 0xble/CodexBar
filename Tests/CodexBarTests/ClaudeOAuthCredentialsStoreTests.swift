@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import CodexBarCore
 
+// swiftlint:disable type_body_length
 @Suite(.serialized)
 struct ClaudeOAuthCredentialsStoreTests {
     private func makeCredentialsData(accessToken: String, expiresAt: Date, refreshToken: String? = nil) -> Data {
@@ -288,7 +289,7 @@ struct ClaudeOAuthCredentialsStoreTests {
                                 try ClaudeOAuthCredentialsStore.withCCSExportURLOverrideForTesting(ccsURL) {
                                     try ClaudeOAuthCredentialsStore.loadRecord(
                                         environment: [
-                                            ClaudeOAuthCredentialsStore.environmentTokenKey:
+                                            ClaudeOAuthCredentialsStore.environmentTokenHintKey:
                                                 "sk-ant-oat01-brian-primary-stale-000000",
                                         ],
                                         allowKeychainPrompt: false,
@@ -963,3 +964,5 @@ struct ClaudeOAuthCredentialsStoreTests {
         }
     }
 }
+
+// swiftlint:enable type_body_length

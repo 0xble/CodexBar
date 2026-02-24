@@ -1,5 +1,6 @@
 import Foundation
 
+// swiftlint:disable type_body_length
 public protocol ClaudeUsageFetching: Sendable {
     func loadLatestUsage(model: String) async throws -> ClaudeUsageSnapshot
     func debugRawProbe(model: String) async -> String
@@ -409,11 +410,20 @@ public struct ClaudeUsageFetcher: ClaudeUsageFetching, Sendable {
             throw ClaudeUsageError.oauthFailed(error.localizedDescription)
         } catch let error as ClaudeOAuthFetchError {
             ClaudeOAuthCredentialsStore.invalidateCache()
+            let staleAccessToken = self.environment[ClaudeOAuthCredentialsStore.environmentTokenKey]
 
             if case .unauthorized = error,
                allowDelegatedRetry,
-               let retrySnapshot = await self.retryOAuthAfterUnauthorized(staleAccessToken: self.environment[
-                   ClaudeOAuthCredentialsStore.environmentTokenKey])
+               let retrySnapshot = await self.retryOAuthAfterUnauthorized(staleAccessToken: staleAccessToken)
+            {
+                return retrySnapshot
+            }
+
+            if case let .serverError(statusCode, body) = error,
+               statusCode == 403,
+               Self.isRevokedOAuthTokenBody(body),
+               allowDelegatedRetry,
+               let retrySnapshot = await self.retryOAuthAfterUnauthorized(staleAccessToken: staleAccessToken)
             {
                 return retrySnapshot
             }
@@ -430,6 +440,13 @@ public struct ClaudeUsageFetcher: ClaudeUsageFetching, Sendable {
         } catch {
             throw ClaudeUsageError.oauthFailed(error.localizedDescription)
         }
+    }
+
+    private static func isRevokedOAuthTokenBody(_ body: String?) -> Bool {
+        guard let body = body?.lowercased(), !body.isEmpty else { return false }
+        return body.contains("permission_error")
+            && body.contains("token")
+            && body.contains("revoked")
     }
 
     private func retryOAuthAfterUnauthorized(staleAccessToken: String?) async -> ClaudeUsageSnapshot? {
@@ -457,10 +474,22 @@ public struct ClaudeUsageFetcher: ClaudeUsageFetching, Sendable {
         do {
             let ccsCredentials = try ClaudeOAuthCredentialsStore.loadFromCCSExportFile(
                 matchingAccessToken: staleAccessToken)
-            if ccsCredentials.accessToken != staleAccessToken,
-               let snapshot = try await self.retryOAuthUsageWithRecoveredCredentials(
-                   ccsCredentials,
-                   staleAccessToken: staleAccessToken)
+            do {
+                if let snapshot = try await self.retryOAuthUsageWithRecoveredCredentials(
+                    ccsCredentials,
+                    staleAccessToken: staleAccessToken)
+                {
+                    return snapshot
+                }
+            } catch {
+                Self.log.debug(
+                    "Claude OAuth unauthorized retry: CCS access-token retry failed",
+                    metadata: ["error": error.localizedDescription])
+            }
+
+            if let snapshot = await self.retryOAuthAfterCCSRefreshToken(
+                ccsCredentials,
+                staleAccessToken: staleAccessToken)
             {
                 return snapshot
             }
@@ -471,6 +500,32 @@ public struct ClaudeUsageFetcher: ClaudeUsageFetching, Sendable {
         }
 
         return nil
+    }
+
+    private func retryOAuthAfterCCSRefreshToken(
+        _ ccsCredentials: ClaudeOAuthCredentials,
+        staleAccessToken: String?) async -> ClaudeUsageSnapshot?
+    {
+        guard let refreshToken = ccsCredentials.refreshToken?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !refreshToken.isEmpty
+        else {
+            return nil
+        }
+
+        do {
+            let refreshed = try await ClaudeOAuthCredentialsStore.refreshAccessToken(
+                refreshToken: refreshToken,
+                existingScopes: ccsCredentials.scopes,
+                existingRateLimitTier: ccsCredentials.rateLimitTier)
+            return try await self.retryOAuthUsageWithRecoveredCredentials(
+                refreshed,
+                staleAccessToken: staleAccessToken)
+        } catch {
+            Self.log.debug(
+                "Claude OAuth unauthorized retry: CCS refresh-token recovery failed",
+                metadata: ["error": error.localizedDescription])
+            return nil
+        }
     }
 
     private func retryOAuthUsageWithRecoveredCredentials(
@@ -1151,3 +1206,4 @@ extension ClaudeUsageFetcher {
     }
 }
 #endif
+// swiftlint:enable type_body_length

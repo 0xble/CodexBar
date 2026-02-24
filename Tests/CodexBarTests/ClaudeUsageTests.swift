@@ -3,6 +3,7 @@ import Testing
 @testable import CodexBar
 @testable import CodexBarCore
 
+// swiftlint:disable type_body_length
 @Suite
 struct ClaudeUsageTests {
     private actor AsyncCounter {
@@ -163,6 +164,160 @@ struct ClaudeUsageTests {
             await attempts.append(accessToken)
             if accessToken == staleToken {
                 throw ClaudeOAuthFetchError.unauthorized
+            }
+            if accessToken == freshToken {
+                return usageResponse
+            }
+            throw ClaudeOAuthFetchError.unauthorized
+        }
+
+        let snapshot = try await KeychainCacheStore.withServiceOverrideForTesting(service) {
+            KeychainCacheStore.setTestStoreForTesting(true)
+            defer { KeychainCacheStore.setTestStoreForTesting(false) }
+
+            return try await ClaudeOAuthCredentialsStore.withIsolatedCredentialsFileTrackingForTesting {
+                try await ClaudeOAuthCredentialsStore.withIsolatedMemoryCacheForTesting {
+                    try await ClaudeOAuthCredentialsStore.withKeychainAccessOverrideForTesting(true) {
+                        try await ClaudeOAuthCredentialsStore.withCredentialsURLOverrideForTesting(
+                            missingCredentialsURL)
+                        {
+                            try await ClaudeOAuthCredentialsStore.withCCSExportURLOverrideForTesting(ccsURL) {
+                                try await ClaudeUsageFetcher.$fetchOAuthUsageOverride.withValue(fetchOverride) {
+                                    try await fetcher.loadLatestUsage(model: "sonnet")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        #expect(snapshot.primary.usedPercent == 7)
+        #expect(snapshot.secondary?.usedPercent == 21)
+
+        let tokens = await attempts.all()
+        #expect(tokens == [staleToken, freshToken])
+    }
+
+    @Test
+    func oauthUnauthorizedRetry_recoversByRefreshingCCSTokenWhenAccessTokenIsStillStale() async throws {
+        let staleToken = "sk-ant-oat01-brian-primary-stale-000000"
+        let refreshedToken = "sk-ant-oat01-brian-primary-refreshed-123456"
+        let usageResponse = try Self.makeOAuthUsageResponse()
+        let attempts = AccessTokenAttempts()
+        let refreshCounter = AsyncCounter()
+        let service = "com.steipete.codexbar.cache.tests.\(UUID().uuidString)"
+
+        let fetcher = ClaudeUsageFetcher(
+            browserDetection: BrowserDetection(cacheTTL: 0),
+            environment: [ClaudeOAuthCredentialsStore.environmentTokenKey: staleToken],
+            dataSource: .oauth,
+            oauthKeychainPromptCooldownEnabled: true)
+
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        let missingCredentialsURL = tempDir.appendingPathComponent("credentials.json")
+        let ccsURL = tempDir.appendingPathComponent("claude-oauth.json")
+        try Self.makeCCSExportData(
+            accessToken: staleToken,
+            refreshToken: "sk-ant-ort01-brian-primary-refresh-123456")
+            .write(to: ccsURL)
+
+        let fetchOverride: (@Sendable (String) async throws -> OAuthUsageResponse)? = { accessToken in
+            await attempts.append(accessToken)
+            if accessToken == staleToken {
+                throw ClaudeOAuthFetchError.unauthorized
+            }
+            if accessToken == refreshedToken {
+                return usageResponse
+            }
+            throw ClaudeOAuthFetchError.unauthorized
+        }
+
+        let refreshOverride: ClaudeOAuthCredentialsStore
+            .RefreshAccessTokenOverride? = { refreshToken, existingScopes, existingRateLimitTier in
+                _ = await refreshCounter.increment()
+                #expect(refreshToken == "sk-ant-ort01-brian-primary-refresh-123456")
+                #expect(existingScopes.contains("user:profile"))
+                #expect(existingRateLimitTier == "default_claude_max_20x")
+                return ClaudeOAuthCredentials(
+                    accessToken: refreshedToken,
+                    refreshToken: refreshToken,
+                    expiresAt: Date(timeIntervalSinceNow: 3600),
+                    scopes: existingScopes,
+                    rateLimitTier: existingRateLimitTier)
+            }
+
+        let snapshot = try await KeychainCacheStore.withServiceOverrideForTesting(service) {
+            KeychainCacheStore.setTestStoreForTesting(true)
+            defer { KeychainCacheStore.setTestStoreForTesting(false) }
+
+            return try await ClaudeOAuthCredentialsStore.withIsolatedCredentialsFileTrackingForTesting {
+                try await ClaudeOAuthCredentialsStore.withIsolatedMemoryCacheForTesting {
+                    try await ClaudeOAuthCredentialsStore.withKeychainAccessOverrideForTesting(true) {
+                        try await ClaudeOAuthCredentialsStore.withCredentialsURLOverrideForTesting(
+                            missingCredentialsURL)
+                        {
+                            try await ClaudeOAuthCredentialsStore.withCCSExportURLOverrideForTesting(ccsURL) {
+                                try await ClaudeOAuthCredentialsStore
+                                    .withRefreshAccessTokenOverrideForTesting(refreshOverride) {
+                                        try await ClaudeUsageFetcher.$fetchOAuthUsageOverride.withValue(fetchOverride) {
+                                            try await fetcher.loadLatestUsage(model: "sonnet")
+                                        }
+                                    }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        #expect(snapshot.primary.usedPercent == 7)
+        #expect(snapshot.secondary?.usedPercent == 21)
+        #expect(await refreshCounter.current() == 1)
+
+        let tokens = await attempts.all()
+        #expect(tokens == [staleToken, refreshedToken])
+    }
+
+    @Test
+    func oauthRevoked403Retry_recoversFromCCSExportWhenTokenAccountIsStale() async throws {
+        let staleToken = "sk-ant-oat01-brian-primary-stale-000000"
+        let freshToken = "sk-ant-oat01-brian-primary-fresh-123456"
+        let usageResponse = try Self.makeOAuthUsageResponse()
+        let attempts = AccessTokenAttempts()
+        let service = "com.steipete.codexbar.cache.tests.\(UUID().uuidString)"
+
+        let fetcher = ClaudeUsageFetcher(
+            browserDetection: BrowserDetection(cacheTTL: 0),
+            environment: [ClaudeOAuthCredentialsStore.environmentTokenKey: staleToken],
+            dataSource: .oauth,
+            oauthKeychainPromptCooldownEnabled: true)
+
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        let missingCredentialsURL = tempDir.appendingPathComponent("credentials.json")
+        let ccsURL = tempDir.appendingPathComponent("claude-oauth.json")
+        try Self.makeCCSExportData(
+            accessToken: freshToken,
+            refreshToken: "sk-ant-ort01-brian-primary-refresh-123456")
+            .write(to: ccsURL)
+
+        let revokedBody = """
+        {
+          "type": "error",
+          "error": {
+            "type": "permission_error",
+            "message": "OAuth token has been revoked. Please obtain a new token."
+          }
+        }
+        """
+        let fetchOverride: (@Sendable (String) async throws -> OAuthUsageResponse)? = { accessToken in
+            await attempts.append(accessToken)
+            if accessToken == staleToken {
+                throw ClaudeOAuthFetchError.serverError(403, revokedBody)
             }
             if accessToken == freshToken {
                 return usageResponse
@@ -952,6 +1107,8 @@ struct ClaudeUsageTests {
         #expect(cliVersion?.isEmpty != true)
     }
 }
+
+// swiftlint:enable type_body_length
 
 extension ClaudeUsageTests {
     @Test
