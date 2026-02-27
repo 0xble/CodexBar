@@ -154,12 +154,47 @@ public enum CodexOAuthCredentialsStore {
         }
 
         json["tokens"] = tokens
-        json["last_refresh"] = ISO8601DateFormatter().string(from: Date())
+        json["last_refresh"] = self.refreshTimestamp()
 
         let data = try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys])
         let directory = url.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try data.write(to: url, options: .atomic)
+    }
+
+    public static func save(_ credentials: CodexOAuthCredentials, accountSelector: String) throws {
+        guard let selector = self.normalizedSelector(accountSelector) else {
+            try self.save(credentials)
+            return
+        }
+
+        let url = self.catalogFilePath
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            try self.save(credentials)
+            return
+        }
+
+        let data = try Data(contentsOf: url)
+        guard var root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              var accounts = root["accounts"] as? [[String: Any]]
+        else {
+            throw CodexOAuthCredentialsError.decodeFailed("Invalid codex-oauth catalog JSON")
+        }
+
+        guard let index = self.catalogAccountIndex(accounts: accounts, selector: selector) else {
+            throw CodexOAuthCredentialsError.decodeFailed("No codex-oauth account matched selected selector")
+        }
+
+        var account = accounts[index]
+        self.apply(credentials: credentials, to: &account)
+        accounts[index] = account
+        root["accounts"] = accounts
+        root["updated_at"] = self.refreshTimestamp()
+
+        let updatedData = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
+        let directory = url.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try updatedData.write(to: url, options: .atomic)
     }
 
     private static func loadCatalogCredentials(accountSelector: String) throws -> CodexOAuthCredentials? {
@@ -221,6 +256,32 @@ public enum CodexOAuthCredentialsStore {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         return trimmed.lowercased()
+    }
+
+    private static func catalogAccountIndex(accounts: [[String: Any]], selector: String) -> Int? {
+        accounts.firstIndex { self.accountMatchesSelector($0, selector: selector) }
+    }
+
+    private static func apply(credentials: CodexOAuthCredentials, to account: inout [String: Any]) {
+        account["access_token"] = credentials.accessToken
+        account["refresh_token"] = credentials.refreshToken
+        if let idToken = credentials.idToken, !idToken.isEmpty {
+            account["id_token"] = idToken
+        } else {
+            account.removeValue(forKey: "id_token")
+        }
+        if let accountId = credentials.accountId, !accountId.isEmpty {
+            account["account_id"] = accountId
+        } else {
+            account.removeValue(forKey: "account_id")
+        }
+        account["last_refresh"] = self.refreshTimestamp()
+    }
+
+    private static func refreshTimestamp() -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: Date())
     }
 
     private static func parseLastRefresh(from raw: Any?) -> Date? {

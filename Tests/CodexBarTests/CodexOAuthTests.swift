@@ -41,6 +41,67 @@ struct CodexOAuthTests {
     }
 
     @Test
+    func savesSelectedAccountCredentialsToCatalog() throws {
+        let root = try FileManager.default.url(
+            for: .itemReplacementDirectory,
+            in: .userDomainMask,
+            appropriateFor: URL(fileURLWithPath: NSTemporaryDirectory()),
+            create: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let secretsDir = root.appendingPathComponent("secrets", isDirectory: true)
+        try FileManager.default.createDirectory(at: secretsDir, withIntermediateDirectories: true)
+        let catalogURL = secretsDir.appendingPathComponent("codex-oauth.json")
+        let catalog: [String: Any] = [
+            "accounts": [
+                [
+                    "key": "brian-brianle-xyz",
+                    "profile": "brian-brianle-xyz",
+                    "name": "brian@brianle.xyz",
+                    "access_token": "old-access",
+                    "refresh_token": "old-refresh",
+                    "id_token": "old-id",
+                    "account_id": "acct-1",
+                    "last_refresh": "2026-02-18T05:19:10.199231Z",
+                ],
+                [
+                    "key": "other-profile",
+                    "profile": "other-profile",
+                    "name": "other@example.com",
+                    "access_token": "other-old-access",
+                    "refresh_token": "other-old-refresh",
+                ],
+            ],
+        ]
+        let catalogData = try JSONSerialization.data(withJSONObject: catalog, options: [.prettyPrinted, .sortedKeys])
+        try catalogData.write(to: catalogURL, options: .atomic)
+
+        let refreshed = CodexOAuthCredentials(
+            accessToken: "new-access",
+            refreshToken: "new-refresh",
+            idToken: "new-id",
+            accountId: "acct-1",
+            lastRefresh: Date())
+
+        try self.withEnvironment(["XDG_CONFIG_HOME": root.path]) {
+            try CodexOAuthCredentialsStore.save(refreshed, accountSelector: "brian-brianle-xyz")
+        }
+
+        let updatedData = try Data(contentsOf: catalogURL)
+        let updatedRoot = try #require(JSONSerialization.jsonObject(with: updatedData) as? [String: Any])
+        let accounts = try #require(updatedRoot["accounts"] as? [[String: Any]])
+        let selected = try #require(accounts.first(where: { ($0["key"] as? String) == "brian-brianle-xyz" }))
+        let other = try #require(accounts.first(where: { ($0["key"] as? String) == "other-profile" }))
+
+        #expect(selected["access_token"] as? String == "new-access")
+        #expect(selected["refresh_token"] as? String == "new-refresh")
+        #expect(selected["id_token"] as? String == "new-id")
+        #expect(selected["account_id"] as? String == "acct-1")
+        #expect((selected["last_refresh"] as? String)?.isEmpty == false)
+        #expect(other["refresh_token"] as? String == "other-old-refresh")
+    }
+
+    @Test
     func decodesCreditsBalanceString() throws {
         let json = """
         {
@@ -118,5 +179,23 @@ struct CodexOAuthTests {
         let config = "chatgpt_base_url = \"https://chat.openai.com\"\n"
         let url = CodexOAuthUsageFetcher._resolveUsageURLForTesting(configContents: config)
         #expect(url.absoluteString == "https://chat.openai.com/backend-api/wham/usage")
+    }
+
+    private func withEnvironment<T>(_ environment: [String: String], operation: () throws -> T) rethrows -> T {
+        var previous: [String: String?] = [:]
+        for (key, value) in environment {
+            previous[key] = getenv(key).map { String(cString: $0) }
+            setenv(key, value, 1)
+        }
+        defer {
+            for (key, value) in previous {
+                if let value {
+                    setenv(key, value, 1)
+                } else {
+                    unsetenv(key)
+                }
+            }
+        }
+        return try operation()
     }
 }

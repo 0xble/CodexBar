@@ -145,7 +145,9 @@ struct CodexOAuthFetchStrategy: ProviderFetchStrategy {
 
         if credentials.needsRefresh, !credentials.refreshToken.isEmpty {
             credentials = try await CodexTokenRefresher.refresh(credentials)
-            if selector == nil {
+            if let selector {
+                try CodexOAuthCredentialsStore.save(credentials, accountSelector: selector)
+            } else {
                 try CodexOAuthCredentialsStore.save(credentials)
             }
         }
