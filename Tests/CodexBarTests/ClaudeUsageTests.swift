@@ -154,7 +154,7 @@ struct ClaudeUsageTests {
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         let missingCredentialsURL = tempDir.appendingPathComponent("credentials.json")
-        let ccsURL = tempDir.appendingPathComponent("claude-oauth.json")
+        let ccsURL = tempDir.appendingPathComponent("claude-accounts.json")
         try Self.makeCCSExportData(
             accessToken: freshToken,
             refreshToken: "sk-ant-ort01-brian-primary-refresh-123456")
@@ -218,7 +218,7 @@ struct ClaudeUsageTests {
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         let missingCredentialsURL = tempDir.appendingPathComponent("credentials.json")
-        let ccsURL = tempDir.appendingPathComponent("claude-oauth.json")
+        let ccsURL = tempDir.appendingPathComponent("claude-accounts.json")
         try Self.makeCCSExportData(
             accessToken: staleToken,
             refreshToken: "sk-ant-ort01-brian-primary-refresh-123456")
@@ -299,7 +299,7 @@ struct ClaudeUsageTests {
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         let missingCredentialsURL = tempDir.appendingPathComponent("credentials.json")
-        let ccsURL = tempDir.appendingPathComponent("claude-oauth.json")
+        let ccsURL = tempDir.appendingPathComponent("claude-accounts.json")
         try Self.makeCCSExportData(
             accessToken: freshToken,
             refreshToken: "sk-ant-ort01-brian-primary-refresh-123456")

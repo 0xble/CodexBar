@@ -395,7 +395,8 @@ public struct ClaudeUsageFetcher: ClaudeUsageFetching, Sendable {
             if !creds.scopes.contains("user:profile") {
                 throw ClaudeUsageError.oauthFailed(
                     "Claude OAuth token missing 'user:profile' scope (has: \(creds.scopes.joined(separator: ", "))). "
-                        + "Run `claude setup-token` to re-generate credentials, or switch Claude Source to Web/CLI.")
+                        + "Run `auth sync` (or `claude login`) to refresh OAuth credentials, "
+                        + "or switch Claude Source to Web/CLI.")
             }
             let usage = try await Self.fetchOAuthUsage(accessToken: creds.accessToken)
             return try Self.mapOAuthUsage(usage, credentials: creds)
@@ -434,7 +435,8 @@ public struct ClaudeUsageFetcher: ClaudeUsageFetching, Sendable {
             {
                 throw ClaudeUsageError.oauthFailed(
                     "Claude OAuth token does not meet scope requirement 'user:profile'. "
-                        + "Run `claude setup-token` to re-generate credentials, or switch Claude Source to Web/CLI.")
+                        + "Run `auth sync` (or `claude login`) to refresh OAuth credentials, "
+                        + "or switch Claude Source to Web/CLI.")
             }
             throw ClaudeUsageError.oauthFailed(error.localizedDescription)
         } catch {
@@ -644,7 +646,7 @@ public struct ClaudeUsageFetcher: ClaudeUsageFetching, Sendable {
                 let scopes = refreshedCreds.scopes.joined(separator: ", ")
                 throw ClaudeUsageError.oauthFailed(
                     "Claude OAuth token missing 'user:profile' scope (has: \(scopes)). "
-                        + "Run `claude setup-token` to re-generate credentials, "
+                        + "Run `auth sync` (or `claude login`) to refresh OAuth credentials, "
                         + "or switch Claude Source to Web/CLI.")
             }
 

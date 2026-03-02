@@ -3,17 +3,31 @@ import CodexBarCore
 import Foundation
 
 enum GeminiLoginRunner {
-    private static let geminiConfigDir = FileManager.default.homeDirectoryForCurrentUser
+    private static let authDir = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".config")
+        .appendingPathComponent("auth")
+    private static let authConfigFile = "config.json"
+    private static let legacyGeminiCredsPath = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".gemini")
-    private static let credentialsFile = "oauth_creds.json"
+        .appendingPathComponent("oauth_creds.json")
 
-    private static func clearCredentials() {
-        let fm = FileManager.default
-        let filesToDelete = [credentialsFile, "google_accounts.json"]
-        for file in filesToDelete {
-            let path = self.geminiConfigDir.appendingPathComponent(file)
-            try? fm.removeItem(at: path)
+    private static func defaultGoogleCredentialsPath() -> String? {
+        let configURL = self.authDir.appendingPathComponent(self.authConfigFile)
+        if let data = try? Data(contentsOf: configURL),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let defaultAccount = (json["default_account"] as? String)?
+               .trimmingCharacters(in: .whitespacesAndNewlines),
+               !defaultAccount.isEmpty
+        {
+            return self.authDir
+                .appendingPathComponent("accounts")
+                .appendingPathComponent(defaultAccount)
+                .appendingPathComponent("credentials")
+                .appendingPathComponent("google.json")
+                .path
         }
+
+        return self.legacyGeminiCredsPath.path
     }
 
     struct Result {
@@ -36,12 +50,11 @@ enum GeminiLoginRunner {
                 return Result(outcome: .missingBinary)
             }
 
-            // Clear existing credentials before auth (enables clean account switch)
-            Self.clearCredentials()
+            let watchedCredentialsPath = Self.defaultGoogleCredentialsPath()
 
-            // Start watching for credentials file to be created
+            // Start watching for auth-store credentials to be created or updated.
             if let callback = onCredentialsCreated {
-                Self.watchForCredentials(callback: callback)
+                Self.watchForCredentials(path: watchedCredentialsPath, callback: callback)
             }
 
             // Create a temporary shell script that runs gemini (auto-prompts for auth when no creds)
@@ -75,18 +88,33 @@ enum GeminiLoginRunner {
         }.value
     }
 
-    /// Watch for credentials file to be created, then call callback once
-    private static func watchForCredentials(callback: @escaping @Sendable () -> Void, timeout: TimeInterval = 300) {
-        let credsPath = self.geminiConfigDir.appendingPathComponent(self.credentialsFile).path
+    /// Watch for auth-store credentials to be created or updated, then call callback once.
+    private static func watchForCredentials(
+        path: String?,
+        callback: @escaping @Sendable () -> Void,
+        timeout: TimeInterval = 300)
+    {
+        guard let credsPath = path, !credsPath.isEmpty else { return }
+        let initialModifiedAt = (try? FileManager.default
+            .attributesOfItem(atPath: credsPath)[.modificationDate]) as? Date
 
         DispatchQueue.global(qos: .utility).async {
             let startTime = Date()
             while Date().timeIntervalSince(startTime) < timeout {
-                if FileManager.default.fileExists(atPath: credsPath) {
-                    // Small delay to ensure file is fully written
-                    Thread.sleep(forTimeInterval: 0.5)
-                    callback()
-                    return
+                if let modifiedAt =
+                    (try? FileManager.default.attributesOfItem(atPath: credsPath)[.modificationDate]) as? Date
+                {
+                    if let initialModifiedAt {
+                        if modifiedAt > initialModifiedAt {
+                            Thread.sleep(forTimeInterval: 0.5)
+                            callback()
+                            return
+                        }
+                    } else {
+                        Thread.sleep(forTimeInterval: 0.5)
+                        callback()
+                        return
+                    }
                 }
                 Thread.sleep(forTimeInterval: 1.0)
             }

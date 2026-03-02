@@ -210,7 +210,7 @@ struct ClaudeOAuthCredentialsStoreTests {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        let ccsURL = tempDir.appendingPathComponent("claude-oauth.json")
+        let ccsURL = tempDir.appendingPathComponent("claude-accounts.json")
 
         let exportData = self.makeCCSExportData(accounts: [
             """
@@ -267,7 +267,7 @@ struct ClaudeOAuthCredentialsStoreTests {
                             .appendingPathComponent(UUID().uuidString, isDirectory: true)
                         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
                         let missingCredentialsURL = tempDir.appendingPathComponent("credentials.json")
-                        let ccsURL = tempDir.appendingPathComponent("claude-oauth.json")
+                        let ccsURL = tempDir.appendingPathComponent("claude-accounts.json")
 
                         let exportData = self.makeCCSExportData(accounts: [
                             """

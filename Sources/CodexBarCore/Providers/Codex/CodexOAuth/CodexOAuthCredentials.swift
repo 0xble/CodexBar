@@ -66,13 +66,13 @@ public enum CodexOAuthCredentialsStore {
             !xdgConfigHome.isEmpty
         {
             return URL(fileURLWithPath: xdgConfigHome)
-                .appendingPathComponent("secrets")
-                .appendingPathComponent("codex-oauth.json")
+                .appendingPathComponent("auth")
+                .appendingPathComponent("codex-accounts.json")
         }
         return home
             .appendingPathComponent(".config")
-            .appendingPathComponent("secrets")
-            .appendingPathComponent("codex-oauth.json")
+            .appendingPathComponent("auth")
+            .appendingPathComponent("codex-accounts.json")
     }
 
     public static func load(accountSelector: String?) throws -> CodexOAuthCredentials {
@@ -178,11 +178,11 @@ public enum CodexOAuthCredentialsStore {
         guard var root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               var accounts = root["accounts"] as? [[String: Any]]
         else {
-            throw CodexOAuthCredentialsError.decodeFailed("Invalid codex-oauth catalog JSON")
+            throw CodexOAuthCredentialsError.decodeFailed("Invalid codex-accounts catalog JSON")
         }
 
         guard let index = self.catalogAccountIndex(accounts: accounts, selector: selector) else {
-            throw CodexOAuthCredentialsError.decodeFailed("No codex-oauth account matched selected selector")
+            throw CodexOAuthCredentialsError.decodeFailed("No codex-accounts account matched selected selector")
         }
 
         var account = accounts[index]
@@ -204,7 +204,7 @@ public enum CodexOAuthCredentialsStore {
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let accounts = root["accounts"] as? [[String: Any]]
         else {
-            throw CodexOAuthCredentialsError.decodeFailed("Invalid codex-oauth catalog JSON")
+            throw CodexOAuthCredentialsError.decodeFailed("Invalid codex-accounts catalog JSON")
         }
 
         for account in accounts {

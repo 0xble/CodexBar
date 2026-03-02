@@ -21,13 +21,17 @@ Gemini uses the Gemini CLI OAuth credentials and private quota APIs. No browser 
    - `GeminiStatusProbe.parse(text:)` can parse `/stats` output.
 
 ## OAuth credentials
-- File: `~/.gemini/oauth_creds.json`.
+- Preferred file: `~/.config/auth/accounts/<google-account>/credentials/google.json`.
+- Legacy fallback: `~/.gemini/oauth_creds.json`.
 - Required fields: `access_token`, `refresh_token` (optional), `id_token`, `expiry_date`.
 - If access token is expired, we refresh via Google OAuth using client ID/secret extracted
-  from the Gemini CLI install (see below).
+  from `~/.config/auth/providers/google/clients/default.json` (fallback: Gemini CLI source extraction).
 
 ## OAuth client ID/secret extraction
-- We locate the installed `gemini` binary, then search for:
+- Primary source:
+  - `~/.config/auth/providers/google/clients/default.json`.
+- Fallback source:
+  - Locate installed `gemini` binary, then search for:
   - Homebrew nested path:
     - `.../libexec/lib/node_modules/@google/gemini-cli/node_modules/@google/gemini-cli-core/dist/src/code_assist/oauth2.js`
   - Bun/npm sibling path:

@@ -49,17 +49,6 @@ struct GeminiStatusProbeAPITests {
             expiry: Date().addingTimeInterval(-3600),
             idToken: GeminiAPITestHelpers.makeIDToken(email: "user@example.com"))
 
-        let binURL = try env.writeFakeGeminiCLI()
-        let previousValue = ProcessInfo.processInfo.environment["GEMINI_CLI_PATH"]
-        setenv("GEMINI_CLI_PATH", binURL.path, 1)
-        defer {
-            if let previousValue {
-                setenv("GEMINI_CLI_PATH", previousValue, 1)
-            } else {
-                unsetenv("GEMINI_CLI_PATH")
-            }
-        }
-
         let dataLoader = GeminiAPITestHelpers.dataLoader { request in
             guard let url = request.url, let host = url.host else {
                 throw URLError(.badURL)
@@ -112,7 +101,7 @@ struct GeminiStatusProbeAPITests {
     }
 
     @Test
-    func refreshesExpiredTokenWithNixShareLayout() async throws {
+    func refreshesExpiredTokenUsingAuthStoreClient() async throws {
         let env = try GeminiTestEnvironment()
         defer { env.cleanup() }
         try env.writeCredentials(
@@ -120,17 +109,6 @@ struct GeminiStatusProbeAPITests {
             refreshToken: "refresh-token",
             expiry: Date().addingTimeInterval(-3600),
             idToken: GeminiAPITestHelpers.makeIDToken(email: "user@example.com"))
-
-        let binURL = try env.writeFakeGeminiCLI(layout: .nixShare)
-        let previousValue = ProcessInfo.processInfo.environment["GEMINI_CLI_PATH"]
-        setenv("GEMINI_CLI_PATH", binURL.path, 1)
-        defer {
-            if let previousValue {
-                setenv("GEMINI_CLI_PATH", previousValue, 1)
-            } else {
-                unsetenv("GEMINI_CLI_PATH")
-            }
-        }
 
         let dataLoader = GeminiAPITestHelpers.dataLoader { request in
             guard let url = request.url, let host = url.host else {
@@ -178,6 +156,121 @@ struct GeminiStatusProbeAPITests {
         let probe = GeminiStatusProbe(timeout: 2, homeDirectory: env.homeURL.path, dataLoader: dataLoader)
         let snapshot = try await probe.fetch()
         #expect(snapshot.accountPlan == "Paid")
+    }
+
+    @Test
+    func refreshesExpiredTokenUsingGeminiCLIOAuthFallback() async throws {
+        let env = try GeminiTestEnvironment()
+        defer { env.cleanup() }
+        try env.writeCredentials(
+            accessToken: "old-token",
+            refreshToken: "refresh-token",
+            expiry: Date().addingTimeInterval(-3600),
+            idToken: GeminiAPITestHelpers.makeIDToken(email: "user@example.com"))
+        env.removeGoogleOAuthClient()
+
+        let binURL = try env.writeFakeGeminiCLI()
+        let previousGeminiPath = ProcessInfo.processInfo.environment["GEMINI_CLI_PATH"]
+        setenv("GEMINI_CLI_PATH", binURL.path, 1)
+        defer {
+            if let previousGeminiPath {
+                setenv("GEMINI_CLI_PATH", previousGeminiPath, 1)
+            } else {
+                unsetenv("GEMINI_CLI_PATH")
+            }
+        }
+
+        let dataLoader = GeminiAPITestHelpers.dataLoader { request in
+            guard let url = request.url, let host = url.host else {
+                throw URLError(.badURL)
+            }
+            switch host {
+            case "oauth2.googleapis.com":
+                let json = GeminiAPITestHelpers.jsonData([
+                    "access_token": "new-token",
+                    "expires_in": 3600,
+                    "id_token": GeminiAPITestHelpers.makeIDToken(email: "user@example.com"),
+                ])
+                return GeminiAPITestHelpers.response(url: url.absoluteString, status: 200, body: json)
+            case "cloudresourcemanager.googleapis.com":
+                let json = GeminiAPITestHelpers.jsonData(["projects": []])
+                return GeminiAPITestHelpers.response(url: url.absoluteString, status: 200, body: json)
+            case "cloudcode-pa.googleapis.com":
+                if url.path == "/v1internal:loadCodeAssist" {
+                    return GeminiAPITestHelpers.response(
+                        url: url.absoluteString,
+                        status: 200,
+                        body: GeminiAPITestHelpers.loadCodeAssistStandardTierResponse())
+                }
+                if url.path == "/v1internal:retrieveUserQuota" {
+                    return GeminiAPITestHelpers.response(
+                        url: url.absoluteString,
+                        status: 200,
+                        body: GeminiAPITestHelpers.sampleQuotaResponse())
+                }
+                return GeminiAPITestHelpers.response(url: url.absoluteString, status: 404, body: Data())
+            default:
+                return GeminiAPITestHelpers.response(url: url.absoluteString, status: 404, body: Data())
+            }
+        }
+
+        let probe = GeminiStatusProbe(timeout: 2, homeDirectory: env.homeURL.path, dataLoader: dataLoader)
+        _ = try await probe.fetch()
+        let updated = try env.readCredentials()
+        #expect(updated["access_token"] as? String == "new-token")
+    }
+
+    @Test
+    func readsLegacyGeminiCredentialsWhenAuthStoreMissing() async throws {
+        let env = try GeminiTestEnvironment()
+        defer { env.cleanup() }
+        try env.writeLegacyCredentials(
+            accessToken: "legacy-token",
+            refreshToken: nil,
+            expiry: Date().addingTimeInterval(3600),
+            idToken: GeminiAPITestHelpers.makeIDToken(email: "legacy@example.com"))
+        env.removeAuthStore()
+
+        let dataLoader = GeminiAPITestHelpers.dataLoader { request in
+            guard let url = request.url, let host = url.host else {
+                throw URLError(.badURL)
+            }
+            switch host {
+            case "cloudresourcemanager.googleapis.com":
+                return GeminiAPITestHelpers.response(
+                    url: url.absoluteString,
+                    status: 200,
+                    body: GeminiAPITestHelpers.jsonData(["projects": []]))
+            case "cloudcode-pa.googleapis.com":
+                if url.path == "/v1internal:loadCodeAssist" {
+                    let auth = request.value(forHTTPHeaderField: "Authorization")
+                    if auth != "Bearer legacy-token" {
+                        return GeminiAPITestHelpers.response(url: url.absoluteString, status: 401, body: Data())
+                    }
+                    return GeminiAPITestHelpers.response(
+                        url: url.absoluteString,
+                        status: 200,
+                        body: GeminiAPITestHelpers.loadCodeAssistStandardTierResponse())
+                }
+                if url.path == "/v1internal:retrieveUserQuota" {
+                    let auth = request.value(forHTTPHeaderField: "Authorization")
+                    if auth != "Bearer legacy-token" {
+                        return GeminiAPITestHelpers.response(url: url.absoluteString, status: 401, body: Data())
+                    }
+                    return GeminiAPITestHelpers.response(
+                        url: url.absoluteString,
+                        status: 200,
+                        body: GeminiAPITestHelpers.sampleQuotaResponse())
+                }
+                return GeminiAPITestHelpers.response(url: url.absoluteString, status: 404, body: Data())
+            default:
+                return GeminiAPITestHelpers.response(url: url.absoluteString, status: 404, body: Data())
+            }
+        }
+
+        let probe = GeminiStatusProbe(timeout: 2, homeDirectory: env.homeURL.path, dataLoader: dataLoader)
+        let snapshot = try await probe.fetch()
+        #expect(snapshot.accountEmail == "legacy@example.com")
     }
 
     @Test
@@ -258,20 +351,20 @@ struct GeminiStatusProbeAPITests {
             refreshToken: "refresh-token",
             expiry: Date().addingTimeInterval(-3600),
             idToken: nil)
-
+        env.removeGoogleOAuthClient()
         let binURL = try env.writeFakeGeminiCLI(includeOAuth: false)
-        let previousValue = ProcessInfo.processInfo.environment["GEMINI_CLI_PATH"]
+        let previousGeminiPath = ProcessInfo.processInfo.environment["GEMINI_CLI_PATH"]
         setenv("GEMINI_CLI_PATH", binURL.path, 1)
         defer {
-            if let previousValue {
-                setenv("GEMINI_CLI_PATH", previousValue, 1)
+            if let previousGeminiPath {
+                setenv("GEMINI_CLI_PATH", previousGeminiPath, 1)
             } else {
                 unsetenv("GEMINI_CLI_PATH")
             }
         }
 
         let probe = GeminiStatusProbe(timeout: 1, homeDirectory: env.homeURL.path)
-        await Self.expectError(.apiError("Could not find Gemini CLI OAuth configuration")) {
+        await Self.expectError(.apiError("Google OAuth client config not found")) {
             _ = try await probe.fetch()
         }
     }

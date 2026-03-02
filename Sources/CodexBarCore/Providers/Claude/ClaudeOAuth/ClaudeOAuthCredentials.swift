@@ -13,7 +13,7 @@ import Security
 // swiftlint:disable type_body_length file_length cyclomatic_complexity
 public enum ClaudeOAuthCredentialsStore {
     private static let credentialsPath = ".claude/.credentials.json"
-    private static let ccsExportPath = ".config/secrets/claude-oauth.json"
+    private static let ccsExportPath = ".config/auth/claude-accounts.json"
     static let claudeKeychainService = "Claude Code-credentials"
     private static let cacheKey = KeychainCacheStore.Key.oauth(provider: .claude)
     public static let environmentTokenKey = "CODEXBAR_CLAUDE_OAUTH_TOKEN"

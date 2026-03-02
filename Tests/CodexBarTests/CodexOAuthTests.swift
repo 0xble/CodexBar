@@ -49,9 +49,9 @@ struct CodexOAuthTests {
             create: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let secretsDir = root.appendingPathComponent("secrets", isDirectory: true)
-        try FileManager.default.createDirectory(at: secretsDir, withIntermediateDirectories: true)
-        let catalogURL = secretsDir.appendingPathComponent("codex-oauth.json")
+        let authDir = root.appendingPathComponent("auth", isDirectory: true)
+        try FileManager.default.createDirectory(at: authDir, withIntermediateDirectories: true)
+        let catalogURL = authDir.appendingPathComponent("codex-accounts.json")
         let catalog: [String: Any] = [
             "accounts": [
                 [

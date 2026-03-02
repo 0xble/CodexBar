@@ -116,7 +116,7 @@ public struct GeminiStatusProbe: Sendable {
     private static let quotaEndpoint = "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota"
     private static let loadCodeAssistEndpoint = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
     private static let projectsEndpoint = "https://cloudresourcemanager.googleapis.com/v1/projects"
-    private static let credentialsPath = "/.gemini/oauth_creds.json"
+    private static let legacyCredentialsPath = "/.gemini/oauth_creds.json"
     private static let settingsPath = "/.gemini/settings.json"
     private static let tokenRefreshEndpoint = "https://oauth2.googleapis.com/token"
 
@@ -189,31 +189,31 @@ public struct GeminiStatusProbe: Sendable {
             "now": "\(Date())",
         ])
 
-        guard let storedAccessToken = creds.accessToken, !storedAccessToken.isEmpty else {
-            Self.log.error("No access token found")
-            throw GeminiStatusProbeError.notLoggedIn
-        }
-
-        var accessToken = storedAccessToken
-        if let expiry = creds.expiryDate, expiry < Date() {
-            Self.log.info("Token expired; attempting refresh", metadata: [
-                "expiry": "\(expiry)",
-            ])
-
-            guard let refreshToken = creds.refreshToken else {
+        var accessToken = creds.accessToken?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        var claims = Self.extractClaimsFromToken(creds.idToken)
+        let shouldRefresh = accessToken.isEmpty || (creds.expiryDate.map { $0 < Date() } ?? false)
+        if shouldRefresh {
+            guard let refreshToken = creds.refreshToken?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !refreshToken.isEmpty
+            else {
                 Self.log.error("No refresh token available")
                 throw GeminiStatusProbeError.notLoggedIn
             }
 
-            accessToken = try await Self.refreshAccessToken(
+            let refreshed = try await Self.refreshAccessToken(
                 refreshToken: refreshToken,
                 timeout: timeout,
                 homeDirectory: homeDirectory,
                 dataLoader: dataLoader)
+            accessToken = refreshed.accessToken
+            if let refreshedIDToken = refreshed.idToken {
+                claims = Self.extractClaimsFromToken(refreshedIDToken)
+            }
         }
-
-        // Extract account info from JWT
-        let claims = Self.extractClaimsFromToken(creds.idToken)
+        if accessToken.isEmpty {
+            Self.log.error("No access token available")
+            throw GeminiStatusProbeError.notLoggedIn
+        }
 
         // Load Code Assist status to get project ID and tier (aligned with CLI setupUser logic)
         let caStatus = await Self.loadCodeAssistStatus(
@@ -264,7 +264,7 @@ public struct GeminiStatusProbe: Sendable {
             throw GeminiStatusProbeError.apiError("HTTP \(httpResponse.statusCode)")
         }
 
-        let snapshot = try Self.parseAPIResponse(data, email: claims.email)
+        let snapshot = try Self.parseAPIResponse(data, email: claims.email ?? creds.accountEmail)
 
         // Plan display strings with tier mapping:
         // - standard-tier: Paid subscription (AI Pro, AI Ultra, Code Assist
@@ -289,7 +289,7 @@ public struct GeminiStatusProbe: Sendable {
         return GeminiStatusSnapshot(
             modelQuotas: snapshot.modelQuotas,
             rawText: snapshot.rawText,
-            accountEmail: snapshot.accountEmail,
+            accountEmail: snapshot.accountEmail ?? creds.accountEmail,
             accountPlan: plan)
     }
 
@@ -432,17 +432,132 @@ public struct GeminiStatusProbe: Sendable {
         let idToken: String?
         let refreshToken: String?
         let expiryDate: Date?
+        let accountEmail: String?
+        let credentialsURL: URL
     }
 
     private struct OAuthClientCredentials {
         let clientId: String
         let clientSecret: String
+        let tokenURL: String
     }
 
-    private static func extractOAuthCredentials() -> OAuthClientCredentials? {
-        let env = ProcessInfo.processInfo.environment
+    private struct RefreshedOAuthToken {
+        let accessToken: String
+        let idToken: String?
+        let expiryDate: Date?
+    }
 
-        // Find the gemini binary
+    private static func resolveAuthDir(homeDirectory: String) -> URL {
+        let env = ProcessInfo.processInfo.environment
+        if homeDirectory == NSHomeDirectory(),
+           let configured = env["AUTH_DIR"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !configured.isEmpty
+        {
+            if configured.hasPrefix("/") {
+                return URL(fileURLWithPath: configured)
+            }
+            return URL(fileURLWithPath: homeDirectory).appendingPathComponent(configured)
+        }
+        return URL(fileURLWithPath: homeDirectory).appendingPathComponent(".config").appendingPathComponent("auth")
+    }
+
+    private static func resolveGoogleCredentialsURL(homeDirectory: String) throws -> (URL, String?) {
+        let authDir = Self.resolveAuthDir(homeDirectory: homeDirectory)
+        let fm = FileManager.default
+        let configURL = authDir.appendingPathComponent("config.json")
+
+        if let data = try? Data(contentsOf: configURL),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let defaultAccount = (json["default_account"] as? String)?
+               .trimmingCharacters(in: .whitespacesAndNewlines),
+               !defaultAccount.isEmpty
+        {
+            let url = authDir
+                .appendingPathComponent("accounts")
+                .appendingPathComponent(defaultAccount)
+                .appendingPathComponent("credentials")
+                .appendingPathComponent("google.json")
+            if fm.fileExists(atPath: url.path) {
+                return (url, defaultAccount)
+            }
+        }
+
+        let legacyURL = URL(fileURLWithPath: homeDirectory + Self.legacyCredentialsPath)
+        let accountsDir = authDir.appendingPathComponent("accounts")
+        if let entries = try? fm.contentsOfDirectory(
+            at: accountsDir,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]).sorted(by: { $0.lastPathComponent < $1.lastPathComponent })
+        {
+            for entry in entries {
+                let accountPath = entry.appendingPathComponent("account.json")
+                guard let data = try? Data(contentsOf: accountPath),
+                      let account = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                else {
+                    continue
+                }
+                if let enabled = account["enabled"] as? Bool, !enabled {
+                    continue
+                }
+                let providers = account["providers"] as? [String] ?? []
+                if !providers.contains("google") {
+                    continue
+                }
+
+                let accountEmail = (account["email"] as? String)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    ?? entry.lastPathComponent
+                if accountEmail.isEmpty {
+                    continue
+                }
+
+                let credsURL = entry.appendingPathComponent("credentials").appendingPathComponent("google.json")
+                if fm.fileExists(atPath: credsURL.path) {
+                    return (credsURL, accountEmail)
+                }
+            }
+        }
+
+        if fm.fileExists(atPath: legacyURL.path) {
+            return (legacyURL, nil)
+        }
+
+        throw GeminiStatusProbeError.notLoggedIn
+    }
+
+    private static func loadOAuthClientCredentials(homeDirectory: String) throws -> OAuthClientCredentials {
+        let authDir = Self.resolveAuthDir(homeDirectory: homeDirectory)
+        let clientURL = authDir
+            .appendingPathComponent("providers")
+            .appendingPathComponent("google")
+            .appendingPathComponent("clients")
+            .appendingPathComponent("default.json")
+        if let data = try? Data(contentsOf: clientURL),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let payload = json["payload"] as? [String: Any]
+        {
+            let source = (payload["installed"] as? [String: Any]) ?? (payload["web"] as? [String: Any]) ?? payload
+            if let clientId = source["client_id"] as? String,
+               let clientSecret = source["client_secret"] as? String,
+               !clientId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               !clientSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            {
+                let tokenURL = (source["token_uri"] as? String) ?? Self.tokenRefreshEndpoint
+                return OAuthClientCredentials(clientId: clientId, clientSecret: clientSecret, tokenURL: tokenURL)
+            }
+            throw GeminiStatusProbeError.apiError("Google OAuth client is missing client_id/client_secret")
+        }
+
+        if let fallback = Self.extractOAuthCredentialsFromGeminiCLI() {
+            return fallback
+        }
+
+        throw GeminiStatusProbeError.apiError("Google OAuth client config not found")
+    }
+
+    private static func extractOAuthCredentialsFromGeminiCLI() -> OAuthClientCredentials? {
+        let env = ProcessInfo.processInfo.environment
         guard let geminiPath = BinaryLocator.resolveGeminiBinary(
             env: env,
             loginPATH: LoginShellPathCache.shared.current)
@@ -451,7 +566,6 @@ public struct GeminiStatusProbe: Sendable {
             return nil
         }
 
-        // Resolve symlinks to find the actual installation
         let fm = FileManager.default
         var realPath = geminiPath
         if let resolved = try? fm.destinationOfSymbolicLink(atPath: geminiPath) {
@@ -462,51 +576,38 @@ public struct GeminiStatusProbe: Sendable {
             }
         }
 
-        // Navigate from bin/gemini to the oauth2.js file
-        // Homebrew path: .../libexec/lib/node_modules/@google/gemini-cli/node_modules/@google/gemini-cli-core/dist/src/code_assist/oauth2.js
-        // Bun/npm path: .../node_modules/@google/gemini-cli-core/dist/src/code_assist/oauth2.js (sibling package)
         let binDir = (realPath as NSString).deletingLastPathComponent
         let baseDir = (binDir as NSString).deletingLastPathComponent
-
         let oauthSubpath =
             "node_modules/@google/gemini-cli/node_modules/@google/gemini-cli-core/dist/src/code_assist/oauth2.js"
-        let nixShareSubpath =
-            "share/gemini-cli/node_modules/@google/gemini-cli-core/dist/src/code_assist/oauth2.js"
+        let nixShareSubpath = "share/gemini-cli/node_modules/@google/gemini-cli-core/dist/src/code_assist/oauth2.js"
         let oauthFile = "dist/src/code_assist/oauth2.js"
         let possiblePaths = [
-            // Homebrew nested structure
             "\(baseDir)/libexec/lib/\(oauthSubpath)",
             "\(baseDir)/lib/\(oauthSubpath)",
-            // Nix package layout
             "\(baseDir)/\(nixShareSubpath)",
-            // Bun/npm sibling structure: gemini-cli-core is a sibling to gemini-cli
             "\(baseDir)/../gemini-cli-core/\(oauthFile)",
-            // npm nested inside gemini-cli
             "\(baseDir)/node_modules/@google/gemini-cli-core/\(oauthFile)",
         ]
-
         for path in possiblePaths {
-            if let content = try? String(contentsOfFile: path, encoding: .utf8) {
-                return self.parseOAuthCredentials(from: content)
+            if let content = try? String(contentsOfFile: path, encoding: .utf8),
+               let parsed = Self.parseOAuthCredentialsFromSource(content)
+            {
+                return parsed
             }
         }
-
         return nil
     }
 
-    private static func parseOAuthCredentials(from content: String) -> OAuthClientCredentials? {
-        // Match: const OAUTH_CLIENT_ID = '...';
+    private static func parseOAuthCredentialsFromSource(_ content: String) -> OAuthClientCredentials? {
         let clientIdPattern = #"OAUTH_CLIENT_ID\s*=\s*['"]([\w\-\.]+)['"]\s*;"#
         let secretPattern = #"OAUTH_CLIENT_SECRET\s*=\s*['"]([\w\-]+)['"]\s*;"#
-
         guard let clientIdRegex = try? NSRegularExpression(pattern: clientIdPattern),
               let secretRegex = try? NSRegularExpression(pattern: secretPattern)
         else {
             return nil
         }
-
         let range = NSRange(content.startIndex..., in: content)
-
         guard let clientIdMatch = clientIdRegex.firstMatch(in: content, range: range),
               let clientIdRange = Range(clientIdMatch.range(at: 1), in: content),
               let secretMatch = secretRegex.firstMatch(in: content, range: range),
@@ -514,11 +615,12 @@ public struct GeminiStatusProbe: Sendable {
         else {
             return nil
         }
-
         let clientId = String(content[clientIdRange])
         let clientSecret = String(content[secretRange])
-
-        return OAuthClientCredentials(clientId: clientId, clientSecret: clientSecret)
+        return OAuthClientCredentials(
+            clientId: clientId,
+            clientSecret: clientSecret,
+            tokenURL: Self.tokenRefreshEndpoint)
     }
 
     private static func refreshAccessToken(
@@ -526,9 +628,10 @@ public struct GeminiStatusProbe: Sendable {
         timeout: TimeInterval,
         homeDirectory: String,
         dataLoader: @escaping @Sendable (URLRequest) async throws -> (Data, URLResponse)) async throws
-        -> String
+        -> RefreshedOAuthToken
     {
-        guard let url = URL(string: tokenRefreshEndpoint) else {
+        let oauthCreds = try Self.loadOAuthClientCredentials(homeDirectory: homeDirectory)
+        guard let url = URL(string: oauthCreds.tokenURL) else {
             throw GeminiStatusProbeError.apiError("Invalid token refresh URL")
         }
 
@@ -537,18 +640,14 @@ public struct GeminiStatusProbe: Sendable {
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = timeout
 
-        guard let oauthCreds = Self.extractOAuthCredentials() else {
-            Self.log.error("Could not extract OAuth credentials from Gemini CLI")
-            throw GeminiStatusProbeError.apiError("Could not find Gemini CLI OAuth configuration")
-        }
-
-        let body = [
-            "client_id=\(oauthCreds.clientId)",
-            "client_secret=\(oauthCreds.clientSecret)",
-            "refresh_token=\(refreshToken)",
-            "grant_type=refresh_token",
-        ].joined(separator: "&")
-        request.httpBody = body.data(using: .utf8)
+        var body = URLComponents()
+        body.queryItems = [
+            URLQueryItem(name: "client_id", value: oauthCreds.clientId),
+            URLQueryItem(name: "client_secret", value: oauthCreds.clientSecret),
+            URLQueryItem(name: "refresh_token", value: refreshToken),
+            URLQueryItem(name: "grant_type", value: "refresh_token"),
+        ]
+        request.httpBody = body.percentEncodedQuery?.data(using: .utf8)
 
         let (data, response) = try await dataLoader(request)
 
@@ -569,30 +668,39 @@ public struct GeminiStatusProbe: Sendable {
             throw GeminiStatusProbeError.parseFailed("Could not parse refresh response")
         }
 
-        // Update stored credentials with new token
-        try Self.updateStoredCredentials(json, homeDirectory: homeDirectory)
+        let idToken = json["id_token"] as? String
+        var expiryDate: Date?
+        if let expiresIn = json["expires_in"] as? NSNumber {
+            expiryDate = Date().addingTimeInterval(expiresIn.doubleValue)
+        }
+        try Self.updateStoredCredentials(
+            accessToken: newAccessToken,
+            idToken: idToken,
+            expiryDate: expiryDate,
+            homeDirectory: homeDirectory)
 
         Self.log.info("Token refreshed successfully")
-        return newAccessToken
+        return RefreshedOAuthToken(accessToken: newAccessToken, idToken: idToken, expiryDate: expiryDate)
     }
 
-    private static func updateStoredCredentials(_ refreshResponse: [String: Any], homeDirectory: String) throws {
-        let credsURL = URL(fileURLWithPath: homeDirectory + Self.credentialsPath)
-
+    private static func updateStoredCredentials(
+        accessToken: String,
+        idToken: String?,
+        expiryDate: Date?,
+        homeDirectory: String) throws
+    {
+        let (credsURL, _) = try Self.resolveGoogleCredentialsURL(homeDirectory: homeDirectory)
         guard let existingCreds = try? Data(contentsOf: credsURL),
               var json = try? JSONSerialization.jsonObject(with: existingCreds) as? [String: Any]
         else {
             return
         }
 
-        // Update with new values from refresh response
-        if let accessToken = refreshResponse["access_token"] {
-            json["access_token"] = accessToken
+        json["access_token"] = accessToken
+        if let expiryDate {
+            json["expiry_date"] = expiryDate.timeIntervalSince1970 * 1000
         }
-        if let expiresIn = refreshResponse["expires_in"] as? Double {
-            json["expiry_date"] = (Date().timeIntervalSince1970 + expiresIn) * 1000
-        }
-        if let idToken = refreshResponse["id_token"] {
+        if let idToken {
             json["id_token"] = idToken
         }
 
@@ -601,7 +709,7 @@ public struct GeminiStatusProbe: Sendable {
     }
 
     private static func loadCredentials(homeDirectory: String) throws -> OAuthCredentials {
-        let credsURL = URL(fileURLWithPath: homeDirectory + Self.credentialsPath)
+        let (credsURL, accountEmail) = try Self.resolveGoogleCredentialsURL(homeDirectory: homeDirectory)
 
         guard FileManager.default.fileExists(atPath: credsURL.path) else {
             throw GeminiStatusProbeError.notLoggedIn
@@ -614,18 +722,26 @@ public struct GeminiStatusProbe: Sendable {
 
         let accessToken = json["access_token"] as? String
         let idToken = json["id_token"] as? String
-        let refreshToken = json["refresh_token"] as? String
+        let refreshToken = (json["secret"] as? String) ?? (json["refresh_token"] as? String)
 
         var expiryDate: Date?
-        if let expiryMs = json["expiry_date"] as? Double {
-            expiryDate = Date(timeIntervalSince1970: expiryMs / 1000)
+        if let expiryMs = json["expiry_date"] as? NSNumber {
+            expiryDate = Date(timeIntervalSince1970: expiryMs.doubleValue / 1000)
+        }
+
+        let hasAccess = !(accessToken ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasRefresh = !(refreshToken ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if !hasAccess, !hasRefresh {
+            throw GeminiStatusProbeError.notLoggedIn
         }
 
         return OAuthCredentials(
             accessToken: accessToken,
             idToken: idToken,
             refreshToken: refreshToken,
-            expiryDate: expiryDate)
+            expiryDate: expiryDate,
+            accountEmail: accountEmail,
+            credentialsURL: credsURL)
     }
 
     private struct TokenClaims {
