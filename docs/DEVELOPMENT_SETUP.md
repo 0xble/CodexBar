@@ -20,7 +20,7 @@ This happens because each rebuild creates a new code signature, and macOS treats
 
 When the prompt appears, click **"Always Allow"** instead of just "Allow". This grants access to the current build.
 
-### Permanent Fix (Recommended)
+### Permanent Fix (Recommended for local GUI development)
 
 Use a stable development certificate that doesn't change between rebuilds:
 
@@ -30,7 +30,11 @@ Use a stable development certificate that doesn't change between rebuilds:
 ./Scripts/setup_dev_signing.sh
 ```
 
-This creates a self-signed certificate named "CodexBar Development".
+This creates a self-signed certificate named "CodexBar Development" in the
+`login` keychain.
+
+Use this only for local interactive development. It is not the release signing
+path, and it is not the preferred path for headless SSH or agent sessions.
 
 #### 2. Trust the Certificate
 
@@ -63,7 +67,8 @@ source ~/.zshrc
 
 Now your builds will use the stable certificate, and keychain prompts will be much less frequent!
 
-> Note: `compile_and_run.sh` now auto-detects a valid signing identity (Developer ID or CodexBar Development).
+> Note: `compile_and_run.sh` now auto-detects a valid signing identity
+> (`Developer ID Application`, `Apple Development`, or `CodexBar Development`).
 > Set `APP_IDENTITY` to override the auto-detected choice.
 
 ---
@@ -73,8 +78,8 @@ Now your builds will use the stable certificate, and keychain prompts will be mu
 If you see multiple `CodexBar *.app` bundles in your project directory, you can clean them up:
 
 ```bash
-# Remove all numbered builds
-rm -rf "CodexBar "*.app
+# Remove all numbered builds safely
+trash "CodexBar "*.app
 
 # The .gitignore already excludes these patterns:
 # - CodexBar.app
@@ -94,6 +99,7 @@ The build script creates `CodexBar.app` in the project root. Old numbered builds
 ```
 
 This script:
+
 1. Kills existing CodexBar instances
 2. Runs `swift build` (release mode)
 3. Runs `swift test` (all tests)

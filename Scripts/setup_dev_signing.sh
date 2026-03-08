@@ -1,17 +1,20 @@
 #!/usr/bin/env bash
-# Setup stable development code signing to reduce keychain prompts
+# Set up a self-signed local development cert for interactive CodexBar rebuilds.
 set -euo pipefail
 
-echo "🔐 Setting up stable development code signing..."
+echo "Setting up stable development code signing..."
 echo ""
 echo "This will create a self-signed certificate that stays consistent across rebuilds,"
 echo "reducing keychain permission prompts."
+echo ""
+echo "This is for local interactive development only."
+echo "Do not use it for release signing, notarization, or headless SSH/agent sessions."
 echo ""
 
 # Check if we already have a CodexBar development certificate
 CERT_NAME="CodexBar Development"
 if security find-certificate -c "$CERT_NAME" >/dev/null 2>&1; then
-    echo "✅ Certificate '$CERT_NAME' already exists!"
+    echo "Certificate '$CERT_NAME' already exists."
     echo ""
     echo "To use it, add this to your shell profile (~/.zshrc or ~/.bashrc):"
     echo ""
@@ -61,9 +64,9 @@ security import /tmp/codexbar-dev.p12 -k ~/Library/Keychains/login.keychain-db -
 rm -f /tmp/codexbar-dev.{key,crt,p12}
 
 echo ""
-echo "✅ Certificate created successfully!"
+echo "Certificate created successfully."
 echo ""
-echo "⚠️  IMPORTANT: You need to trust this certificate for code signing:"
+echo "IMPORTANT: You need to trust this certificate for code signing:"
 echo ""
 echo "1. Open Keychain Access.app"
 echo "2. Find '$CERT_NAME' in the 'login' keychain"
@@ -77,4 +80,3 @@ echo ""
 echo "    export APP_IDENTITY='$CERT_NAME'"
 echo ""
 echo "Restart your terminal and rebuild with ./Scripts/compile_and_run.sh"
-

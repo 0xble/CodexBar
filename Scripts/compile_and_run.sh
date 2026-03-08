@@ -38,14 +38,15 @@ resolve_signing_mode() {
       SIGNING_MODE="identity"
       return
     fi
-    log "WARN: APP_IDENTITY not found in Keychain; falling back to adhoc signing."
+    log "WARN: APP_IDENTITY not found in Keychain; falling back to adhoc signing for a local dev-only build."
     SIGNING_MODE="adhoc"
     return
   fi
 
   local candidate=""
   for candidate in \
-    "Developer ID Application: Peter Steinberger (Y5PE65HELJ)" \
+    "Developer ID Application: Brian Le (MWNX6V232Y)" \
+    "Apple Development: brian@brianle.xyz (QU58S8JT2F)" \
     "CodexBar Development"
   do
     if has_signing_identity "${candidate}"; then
@@ -56,7 +57,7 @@ resolve_signing_mode() {
     fi
   done
 
-  SIGNING_MODE="adhoc"
+  fail "No non-adhoc signing identity found. Set APP_IDENTITY to a Developer ID, Apple Development, or CodexBar Development identity."
 }
 
 run_step() {
