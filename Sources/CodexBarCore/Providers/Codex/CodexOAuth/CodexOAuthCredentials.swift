@@ -59,20 +59,42 @@ public enum CodexOAuthCredentialsStore {
         return home.appendingPathComponent(".codex").appendingPathComponent("auth.json")
     }
 
-    private static var catalogFilePath: URL {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        if let xdgConfigHome = ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"]?.trimmingCharacters(
-            in: .whitespacesAndNewlines),
+    private static func catalogFileCandidates() -> [URL] {
+        let baseConfigURL: URL = if let xdgConfigHome = ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
             !xdgConfigHome.isEmpty
         {
-            return URL(fileURLWithPath: xdgConfigHome)
-                .appendingPathComponent("secrets")
-                .appendingPathComponent("codex-oauth.json")
+            URL(fileURLWithPath: xdgConfigHome)
+        } else {
+            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config")
         }
-        return home
-            .appendingPathComponent(".config")
+
+        let brokerCatalog = baseConfigURL
+            .appendingPathComponent("auth")
+            .appendingPathComponent("codex-catalog.json")
+        let legacyCatalog = baseConfigURL
             .appendingPathComponent("secrets")
             .appendingPathComponent("codex-oauth.json")
+        return [brokerCatalog, legacyCatalog]
+    }
+
+    private static func existingCatalogFilePath() -> URL? {
+        let fileManager = FileManager.default
+        for candidate in self.catalogFileCandidates() where fileManager.fileExists(atPath: candidate.path) {
+            return candidate
+        }
+        return nil
+    }
+
+    private static func catalogFilePath(containing selector: String) throws -> URL? {
+        let fileManager = FileManager.default
+        for candidate in self.catalogFileCandidates() where fileManager.fileExists(atPath: candidate.path) {
+            let accounts = try self.catalogAccounts(at: candidate)
+            if self.catalogAccountIndex(accounts: accounts, selector: selector) != nil {
+                return candidate
+            }
+        }
+        return nil
     }
 
     public static func load(accountSelector: String?) throws -> CodexOAuthCredentials {
@@ -168,21 +190,20 @@ public enum CodexOAuthCredentialsStore {
             return
         }
 
-        let url = self.catalogFilePath
-        guard FileManager.default.fileExists(atPath: url.path) else {
+        guard let url = try self.catalogFilePath(containing: selector) ?? self.existingCatalogFilePath() else {
             try self.save(credentials)
             return
         }
 
         let data = try Data(contentsOf: url)
-        guard var root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              var accounts = root["accounts"] as? [[String: Any]]
-        else {
-            throw CodexOAuthCredentialsError.decodeFailed("Invalid codex-oauth catalog JSON")
+        guard var root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw CodexOAuthCredentialsError.decodeFailed("Invalid Codex catalog JSON")
         }
+        var accounts = try self.catalogAccounts(from: root)
 
         guard let index = self.catalogAccountIndex(accounts: accounts, selector: selector) else {
-            throw CodexOAuthCredentialsError.decodeFailed("No codex-oauth account matched selected selector")
+            try self.save(credentials)
+            return
         }
 
         var account = accounts[index]
@@ -198,24 +219,34 @@ public enum CodexOAuthCredentialsStore {
     }
 
     private static func loadCatalogCredentials(accountSelector: String) throws -> CodexOAuthCredentials? {
-        let url = self.catalogFilePath
-        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-        let data = try Data(contentsOf: url)
-        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let accounts = root["accounts"] as? [[String: Any]]
-        else {
-            throw CodexOAuthCredentialsError.decodeFailed("Invalid codex-oauth catalog JSON")
-        }
-
-        for account in accounts {
-            if !self.accountMatchesSelector(account, selector: accountSelector) {
-                continue
-            }
-            if let credentials = self.catalogAccountCredentials(account) {
-                return credentials
+        let fileManager = FileManager.default
+        for candidate in self.catalogFileCandidates() where fileManager.fileExists(atPath: candidate.path) {
+            let accounts = try self.catalogAccounts(at: candidate)
+            for account in accounts {
+                if !self.accountMatchesSelector(account, selector: accountSelector) {
+                    continue
+                }
+                if let credentials = self.catalogAccountCredentials(account) {
+                    return credentials
+                }
             }
         }
         return nil
+    }
+
+    private static func catalogAccounts(at url: URL) throws -> [[String: Any]] {
+        let data = try Data(contentsOf: url)
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw CodexOAuthCredentialsError.decodeFailed("Invalid Codex catalog JSON")
+        }
+        return try self.catalogAccounts(from: root)
+    }
+
+    private static func catalogAccounts(from root: [String: Any]) throws -> [[String: Any]] {
+        guard let accounts = root["accounts"] as? [[String: Any]] else {
+            throw CodexOAuthCredentialsError.decodeFailed("Invalid Codex catalog JSON")
+        }
+        return accounts
     }
 
     private static func accountMatchesSelector(_ account: [String: Any], selector: String) -> Bool {

@@ -9,27 +9,41 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 source "$ROOT/version.env"
 ZIP_NAME="${APP_NAME}-${MARKETING_VERSION}.zip"
 DSYM_ZIP="${APP_NAME}-${MARKETING_VERSION}.dSYM.zip"
+SPARKLE_TEMP_KEY_FILE=""
+
+resolve_sparkle_key_file() {
+  if [[ -n "${SPARKLE_PRIVATE_KEY_FILE:-}" ]]; then
+    echo "$SPARKLE_PRIVATE_KEY_FILE"
+    return
+  fi
+  if [[ -n "${SPARKLE_PRIVATE_KEY:-}" ]]; then
+    SPARKLE_TEMP_KEY_FILE=$(mktemp /tmp/codexbar-sparkle-key.XXXXXX)
+    printf "%s" "$SPARKLE_PRIVATE_KEY" > "$SPARKLE_TEMP_KEY_FILE"
+    echo "$SPARKLE_TEMP_KEY_FILE"
+    return
+  fi
+
+  echo "Set SPARKLE_PRIVATE_KEY_FILE or SPARKLE_PRIVATE_KEY." >&2
+  exit 1
+}
 
 if [[ -z "${APP_STORE_CONNECT_API_KEY_P8:-}" || -z "${APP_STORE_CONNECT_KEY_ID:-}" || -z "${APP_STORE_CONNECT_ISSUER_ID:-}" ]]; then
   echo "Missing APP_STORE_CONNECT_* env vars (API key, key id, issuer id)." >&2
   exit 1
 fi
-if [[ -z "${SPARKLE_PRIVATE_KEY_FILE:-}" ]]; then
-  echo "SPARKLE_PRIVATE_KEY_FILE is required for release signing/verification." >&2
+SPARKLE_KEY_FILE="$(resolve_sparkle_key_file)"
+if [[ ! -f "$SPARKLE_KEY_FILE" ]]; then
+  echo "Sparkle key file not found: $SPARKLE_KEY_FILE" >&2
   exit 1
 fi
-if [[ ! -f "$SPARKLE_PRIVATE_KEY_FILE" ]]; then
-  echo "Sparkle key file not found: $SPARKLE_PRIVATE_KEY_FILE" >&2
-  exit 1
-fi
-key_lines=$(grep -v '^[[:space:]]*#' "$SPARKLE_PRIVATE_KEY_FILE" | sed '/^[[:space:]]*$/d')
+key_lines=$(grep -v '^[[:space:]]*#' "$SPARKLE_KEY_FILE" | sed '/^[[:space:]]*$/d')
 if [[ $(printf "%s\n" "$key_lines" | wc -l) -ne 1 ]]; then
   echo "Sparkle key file must contain exactly one base64 line (no comments/blank lines)." >&2
   exit 1
 fi
 
 echo "$APP_STORE_CONNECT_API_KEY_P8" | sed 's/\\n/\n/g' > /tmp/codexbar-api-key.p8
-trap 'rm -f /tmp/codexbar-api-key.p8 /tmp/${APP_NAME}Notarize.zip' EXIT
+trap 'rm -f /tmp/codexbar-api-key.p8 /tmp/${APP_NAME}Notarize.zip "$SPARKLE_TEMP_KEY_FILE"' EXIT
 
 # Allow building a universal binary if ARCHES is provided; default to universal (arm64 + x86_64).
 ARCHES_VALUE=${ARCHES:-"arm64 x86_64"}

@@ -12,8 +12,20 @@ APP_NAME="CodexBar"
 ARTIFACT_PREFIX="CodexBar-"
 BUNDLE_ID="com.steipete.codexbar"
 TAG="v${MARKETING_VERSION}"
+SPARKLE_TEMP_KEY_FILE=""
+KEY_FILE=""
+NOTES_FILE=""
 
 err() { echo "ERROR: $*" >&2; exit 1; }
+
+if [[ -z "${SPARKLE_PRIVATE_KEY_FILE:-}" && -n "${SPARKLE_PRIVATE_KEY:-}" ]]; then
+  SPARKLE_TEMP_KEY_FILE=$(mktemp /tmp/codexbar-sparkle-key.XXXXXX)
+  printf "%s" "$SPARKLE_PRIVATE_KEY" > "$SPARKLE_TEMP_KEY_FILE"
+  SPARKLE_PRIVATE_KEY_FILE="$SPARKLE_TEMP_KEY_FILE"
+  export SPARKLE_PRIVATE_KEY_FILE
+fi
+
+trap 'rm -f "$KEY_FILE" "$NOTES_FILE" "$SPARKLE_TEMP_KEY_FILE"' EXIT
 
 require_clean_worktree
 ensure_changelog_finalized "$MARKETING_VERSION"
@@ -27,7 +39,6 @@ swift test
 "$ROOT/Scripts/sign-and-notarize.sh"
 
 KEY_FILE=$(clean_key "$SPARKLE_PRIVATE_KEY_FILE")
-trap 'rm -f "$KEY_FILE"' EXIT
 
 probe_sparkle_key "$KEY_FILE"
 
@@ -35,7 +46,6 @@ clear_sparkle_caches "$BUNDLE_ID"
 
 NOTES_FILE=$(mktemp /tmp/codexbar-notes.XXXXXX.md)
 extract_notes_from_changelog "$MARKETING_VERSION" "$NOTES_FILE"
-trap 'rm -f "$KEY_FILE" "$NOTES_FILE"' EXIT
 
 git tag -f "$TAG"
 git push -f origin "$TAG"

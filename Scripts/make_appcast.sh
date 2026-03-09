@@ -6,10 +6,17 @@ ZIP=${1:?
 "Usage: $0 CodexBar-<ver>.zip"}
 FEED_URL=${2:-"https://raw.githubusercontent.com/steipete/CodexBar/main/appcast.xml"}
 PRIVATE_KEY_FILE=${SPARKLE_PRIVATE_KEY_FILE:-}
+TEMP_KEY_FILE=""
 SPARKLE_CHANNEL=${SPARKLE_CHANNEL:-}
 if [[ -z "$PRIVATE_KEY_FILE" ]]; then
-  echo "Set SPARKLE_PRIVATE_KEY_FILE to your ed25519 private key (Sparkle)." >&2
-  exit 1
+  if [[ -n "${SPARKLE_PRIVATE_KEY:-}" ]]; then
+    TEMP_KEY_FILE=$(mktemp /tmp/codexbar-sparkle-key.XXXXXX)
+    printf "%s" "$SPARKLE_PRIVATE_KEY" > "$TEMP_KEY_FILE"
+    PRIVATE_KEY_FILE="$TEMP_KEY_FILE"
+  else
+    echo "Set SPARKLE_PRIVATE_KEY_FILE or SPARKLE_PRIVATE_KEY." >&2
+    exit 1
+  fi
 fi
 if [[ ! -f "$ZIP" ]]; then
   echo "Zip not found: $ZIP" >&2
@@ -44,6 +51,7 @@ cleanup() {
   if [[ "$KEEP_NOTES" != "1" ]]; then
     rm -f "$NOTES_HTML"
   fi
+  rm -f "$TEMP_KEY_FILE"
 }
 trap cleanup EXIT
 

@@ -9,13 +9,20 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 VERSION=${1:-$(source "$ROOT/version.env" && echo "$MARKETING_VERSION")}
 APPCAST="${ROOT}/appcast.xml"
+SPARKLE_KEY_SOURCE_FILE="${SPARKLE_PRIVATE_KEY_FILE:-}"
+SPARKLE_TEMP_KEY_FILE=""
 
-if [[ -z "${SPARKLE_PRIVATE_KEY_FILE:-}" ]]; then
-  echo "SPARKLE_PRIVATE_KEY_FILE is required" >&2
+if [[ -z "$SPARKLE_KEY_SOURCE_FILE" && -n "${SPARKLE_PRIVATE_KEY:-}" ]]; then
+  SPARKLE_TEMP_KEY_FILE=$(mktemp /tmp/codexbar-sparkle-key.XXXXXX)
+  printf "%s" "$SPARKLE_PRIVATE_KEY" > "$SPARKLE_TEMP_KEY_FILE"
+  SPARKLE_KEY_SOURCE_FILE="$SPARKLE_TEMP_KEY_FILE"
+fi
+if [[ -z "$SPARKLE_KEY_SOURCE_FILE" ]]; then
+  echo "Set SPARKLE_PRIVATE_KEY_FILE or SPARKLE_PRIVATE_KEY." >&2
   exit 1
 fi
-if [[ ! -f "$SPARKLE_PRIVATE_KEY_FILE" ]]; then
-  echo "Sparkle key file not found: $SPARKLE_PRIVATE_KEY_FILE" >&2
+if [[ ! -f "$SPARKLE_KEY_SOURCE_FILE" ]]; then
+  echo "Sparkle key file not found: $SPARKLE_KEY_SOURCE_FILE" >&2
   exit 1
 fi
 if [[ ! -f "$APPCAST" ]]; then
@@ -26,7 +33,7 @@ fi
 # Clean the key file: strip comments/blank lines and require exactly one line of base64.
 function cleaned_key_path() {
   local tmp key_lines
-  key_lines=$(grep -v '^[[:space:]]*#' "$SPARKLE_PRIVATE_KEY_FILE" | sed '/^[[:space:]]*$/d')
+  key_lines=$(grep -v '^[[:space:]]*#' "$SPARKLE_KEY_SOURCE_FILE" | sed '/^[[:space:]]*$/d')
   if [[ $(printf "%s\n" "$key_lines" | wc -l) -ne 1 ]]; then
     echo "Sparkle key file must contain exactly one base64 line (no comments/blank lines)." >&2
     exit 1
@@ -37,7 +44,7 @@ function cleaned_key_path() {
 }
 
 KEY_FILE=$(cleaned_key_path)
-trap 'rm -f "$KEY_FILE" "$TMP_ZIP"' EXIT
+trap 'rm -f "$KEY_FILE" "$TMP_ZIP" "$SPARKLE_TEMP_KEY_FILE"' EXIT
 
 TMP_ZIP=$(mktemp /tmp/codexbar-enclosure.XXXX.zip)
 
