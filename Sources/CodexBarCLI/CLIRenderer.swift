@@ -139,8 +139,11 @@ enum CLIRenderer {
         context: RenderContext,
         lines: inout [String])
     {
+        if let account = context.account, !account.isEmpty {
+            lines.append(self.labelValueLine("Account", value: account, useColor: context.useColor))
+        }
         if let email = snapshot.accountEmail(for: provider), !email.isEmpty {
-            lines.append(self.labelValueLine("Account", value: email, useColor: context.useColor))
+            lines.append(self.labelValueLine("Email", value: email, useColor: context.useColor))
         }
 
         if provider == .kilo {
@@ -377,6 +380,7 @@ enum CLIRenderer {
 
 struct RenderContext {
     let header: String
+    let account: String?
     let status: ProviderStatusPayload?
     let useColor: Bool
     let resetStyle: ResetTimeDisplayStyle
@@ -384,12 +388,14 @@ struct RenderContext {
 
     init(
         header: String,
+        account: String? = nil,
         status: ProviderStatusPayload?,
         useColor: Bool,
         resetStyle: ResetTimeDisplayStyle,
         notes: [String] = [])
     {
         self.header = header
+        self.account = account
         self.status = status
         self.useColor = useColor
         self.resetStyle = resetStyle

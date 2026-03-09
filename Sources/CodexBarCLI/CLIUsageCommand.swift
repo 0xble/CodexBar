@@ -249,6 +249,7 @@ extension CodexBarCLI {
             base: baseSource,
             provider: provider,
             account: account)
+        let accountIdentifier = tokenContext.accountIdentifier(for: provider, account: account)
 
         #if !os(macOS)
         if Self.sourceModeRequiresWebSupport(effectiveSourceMode, provider: provider) {
@@ -319,6 +320,7 @@ extension CodexBarCLI {
                     credits: result.credits,
                     context: RenderContext(
                         header: header,
+                        account: accountIdentifier,
                         status: status,
                         useColor: command.useColor,
                         resetStyle: command.resetStyle,
@@ -330,7 +332,7 @@ extension CodexBarCLI {
             case .json:
                 output.payload.append(ProviderPayload(
                     provider: provider,
-                    account: account?.label,
+                    account: accountIdentifier,
                     version: version,
                     source: source,
                     status: status,
@@ -345,15 +347,15 @@ extension CodexBarCLI {
             if command.format == .json {
                 output.payload.append(Self.makeProviderErrorPayload(
                     provider: provider,
-                    account: account?.label,
+                    account: accountIdentifier,
                     source: effectiveSourceMode.rawValue,
                     status: status,
                     error: error,
                     kind: .provider))
             } else if !command.jsonOnly {
-                if let account {
+                if let accountIdentifier {
                     Self.writeStderr(
-                        "Error (\(provider.rawValue) - \(account.label)): \(error.localizedDescription)\n")
+                        "Error (\(provider.rawValue) - \(accountIdentifier)): \(error.localizedDescription)\n")
                 } else {
                     Self.writeStderr("Error: \(error.localizedDescription)\n")
                 }

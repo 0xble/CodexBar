@@ -25,6 +25,7 @@ struct CLISnapshotTests {
             credits: CreditsSnapshot(remaining: 42, events: [], updatedAt: Date()),
             context: RenderContext(
                 header: "Codex 1.2.3 (codex-cli)",
+                account: "brianandmahin-gmail-com",
                 status: ProviderStatusPayload(
                     indicator: .minor,
                     description: "Degraded performance",
@@ -39,7 +40,8 @@ struct CLISnapshotTests {
         #expect(output.contains("Session: 88% left"))
         #expect(output.contains("Weekly: 75% left"))
         #expect(output.contains("Credits: 42"))
-        #expect(output.contains("Account: user@example.com"))
+        #expect(output.contains("Account: brianandmahin-gmail-com"))
+        #expect(output.contains("Email: user@example.com"))
         #expect(output.contains("Plan: Pro"))
     }
 

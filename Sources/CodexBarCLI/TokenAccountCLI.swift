@@ -232,6 +232,18 @@ struct TokenAccountCLIContext {
         return snapshot.withIdentity(identity)
     }
 
+    func accountIdentifier(for provider: UsageProvider, account: ProviderTokenAccount?) -> String? {
+        guard let account else { return nil }
+        if provider == .codex {
+            let token = account.token.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !token.isEmpty {
+                return token
+            }
+        }
+        let label = account.label.trimmingCharacters(in: .whitespacesAndNewlines)
+        return label.isEmpty ? nil : label
+    }
+
     func effectiveSourceMode(
         base: ProviderSourceMode,
         provider: UsageProvider,
